@@ -21,6 +21,46 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
+from .status import StatusManager
+
+
+class RetryPolicy:
+    """
+    Lightweight, dependency-free retry helper for transient errors during
+    polling, recovery, and background wait loops.
+
+    Keeps the harness resilient without adding weight. Used for network/CLI
+    hiccups that should not kill a long-running delegation.
+    """
+
+    def __init__(self, max_attempts: int = 3, base_delay: float = 1.0, max_delay: float = 30.0):
+        self.max_attempts = max(1, max_attempts)
+        self.base_delay = max(0.1, base_delay)
+        self.max_delay = max(self.base_delay, max_delay)
+
+    def run(self, fn, *args, on_error=None, **kwargs):
+        """
+        Execute fn(*args, **kwargs) with limited retries + exponential backoff.
+
+        Returns (success: bool, result_or_last_error).
+        on_error(err, attempt) optional hook (e.g. to record to status).
+        """
+        last_err = None
+        for attempt in range(self.max_attempts):
+            try:
+                return True, fn(*args, **kwargs)
+            except Exception as e:  # broad but intentional for CLI/tool transient failures
+                last_err = e
+                if on_error:
+                    try:
+                        on_error(e, attempt + 1)
+                    except Exception:
+                        pass
+                if attempt < self.max_attempts - 1:
+                    delay = min(self.base_delay * (2 ** attempt), self.max_delay)
+                    time.sleep(delay)
+        return False, last_err
+
 
 def build_grok_prompt(task: str, target_dir: str, context: Optional[str] = None, constraints: Optional[str] = None) -> str:
     """Construct a strong, code-first prompt for Grok with structured final output."""
@@ -98,12 +138,16 @@ Be explicit about whether changes were made. If nothing was changed, say so clea
     return prompt
 
 
-def call_grok_headless(prompt: str, cwd: str, model: str = "grok-build", timeout: int = 1800, max_turns: int = 60) -> dict:
+def call_model_headless(prompt: str, cwd: str, model: str = "grok-build", timeout: int = 1800, max_turns: int = 60) -> dict:
     """
-    Call Grok in headless mode and return structured results.
+    Call the model in headless mode (via external CLI) and return structured results.
+
+    The backend is driven by the --model flag (default "grok-build"). This function
+    is intentionally a thin adapter so the harness can remain model-agnostic and
+    work as a universal delegation wrapper (primary for Grok, reliable adapter for others).
 
     Supports long-running tasks by allowing configurable timeouts (default 30 minutes).
-    When a task exceeds the timeout, the inner Grok may continue in background mode.
+    When a task exceeds the timeout, the inner agent may continue in background mode.
     """
     cmd = [
         "grok",
@@ -154,24 +198,44 @@ def call_grok_headless(prompt: str, cwd: str, model: str = "grok-build", timeout
 
 
 def _make_delegate_status(run_id: str, run_name: Optional[str], task: Optional[str],
-                            target_dir: str, model: str, state: str = "waiting") -> dict:
-    """Create a rich, queryable status record for background / long-running delegate runs."""
+                            target_dir: str, model: str, state: str = "waiting",
+                            prompt: Optional[str] = None,
+                            context: Optional[str] = None,
+                            constraints: Optional[str] = None) -> dict:
+    """
+    DEPRECATED: Use StatusManager.create_new(...) instead.
+
+    Legacy helper retained only for test compatibility and smooth transition.
+    Will be removed in a future release (post 0.3.x).
+    """
     task_snippet = ((task or "")[:140].replace("\n", " ").strip() + "...") if task else ""
-    return {
+    status = {
         "run_id": run_id,
         "run_name": run_name,
         "task": task_snippet,
         "target_dir": target_dir,
         "model": model,
-        "state": state,                 # waiting | completed | max_wait_exceeded
+        "state": state,
         "started_at": datetime.now().isoformat(),
         "elapsed_seconds": 0,
         "last_poll_at": None,
     }
+    if prompt:
+        status["prompt"] = prompt
+    if context:
+        status["context"] = context
+    if constraints:
+        status["constraints"] = constraints
+    return status
 
 
 def _write_status_file(status_file: Path, data: dict) -> None:
-    """Atomic-ish write of delegate status with secure 600 file permissions."""
+    """
+    DEPRECATED: Use StatusManager + its _atomic_write (or .write() / .update()).
+
+    Legacy helper retained only for test compatibility and smooth transition.
+    Will be removed in a future release (post 0.3.x).
+    """
     try:
         status_file.write_text(json.dumps(data, indent=2))
         status_file.chmod(0o600)
@@ -180,38 +244,51 @@ def _write_status_file(status_file: Path, data: dict) -> None:
 
 
 def _finalize_delegate_status(status_file: Optional[Path], clean_result: dict, run_name: Optional[str] = None) -> None:
-    """Update (or create) a status file with final completion state after a run ends."""
+    """
+    DEPRECATED (thin wrapper): Use StatusManager.mark_completed / set_state directly.
+
+    This function now delegates to StatusManager internally for consistency.
+    Retained for call sites during transition; new code should prefer the manager.
+    Will be removed in a future release (post 0.3.x).
+    """
     if not status_file:
         return
-    try:
-        existing = {}
-        if status_file.exists():
-            existing = json.loads(status_file.read_text())
-        final_state = "completed" if clean_result.get("success") else "failed"
-        if clean_result.get("status") == "no_changes":
-            final_state = "completed_no_changes"
-        elapsed = None
-        if "started_at" in existing:
-            try:
-                started = datetime.fromisoformat(existing["started_at"])
-                elapsed = int((datetime.now() - started).total_seconds())
-            except Exception:
-                pass
 
-        final = {
-            **existing,
-            "state": final_state,
-            "final_status": clean_result.get("status"),
-            "ended_at": datetime.now().isoformat(),
-            "elapsed_seconds": elapsed or existing.get("elapsed_seconds"),
-            "run_name": run_name or existing.get("run_name"),
-            "summary": clean_result.get("summary", "")[:200],
-        }
-        if clean_result.get("run_id"):
-            final["run_id"] = clean_result["run_id"]
-        _write_status_file(status_file, final)
-    except Exception:
-        pass
+    status_manager = StatusManager(status_file)
+    status_manager.load()  # Best effort load of existing data
+    # Self-heal before finalizing so even weird crash scenarios leave a usable .status
+    status_manager.ensure_recoverable(
+        clean_result.get("run_id") or status_manager.get("run_id") or "unknown",
+        clean_result.get("run_name") or status_manager.get("run_name"),
+        clean_result.get("metadata", {}).get("target_directory") or status_manager.get("target_dir") or ".",
+        clean_result.get("metadata", {}).get("model") or status_manager.get("model") or "grok-build",
+    )
+
+    final_state = "completed" if clean_result.get("success") else "failed"
+    if clean_result.get("status") == "no_changes":
+        final_state = "completed_no_changes"
+
+    elapsed = None
+    if "started_at" in status_manager.to_dict():
+        try:
+            started = datetime.fromisoformat(status_manager.get("started_at"))
+            elapsed = int((datetime.now() - started).total_seconds())
+        except Exception:
+            pass
+
+    # Update via manager
+    status_manager.set_state(final_state)
+    updates = {
+        "final_status": clean_result.get("status"),
+        "ended_at": datetime.now().isoformat(),
+        "elapsed_seconds": elapsed or status_manager.get("elapsed_seconds"),
+        "run_name": run_name or status_manager.get("run_name"),
+        "summary": clean_result.get("summary", "")[:200],
+    }
+    if clean_result.get("run_id"):
+        updates["run_id"] = clean_result["run_id"]
+
+    status_manager.update(**updates)
 
 
 def prune_completed_status_files(target_dir: str, max_age_days: int = 7) -> None:
@@ -246,6 +323,7 @@ def _wait_for_background_completion(
     run_name: Optional[str] = None,
     task: Optional[str] = None,
     existing_status_file: Optional[Path] = None,
+    quiet: bool = False,
 ) -> dict:
     """
     After a timeout, keep polling until the background run completes or max_wait is exceeded.
@@ -255,34 +333,35 @@ def _wait_for_background_completion(
     """
     start_time = time.time()
 
+    # Use StatusManager for robust status handling
     if existing_status_file and existing_status_file.exists():
-        try:
-            existing = json.loads(existing_status_file.read_text())
-            run_id = existing.get("run_id") or str(uuid.uuid4())[:8]
-            status_file = existing_status_file
-            status = existing
-            status["state"] = "waiting"
-            status["last_poll_at"] = datetime.now().isoformat()
-            _write_status_file(status_file, status)
-        except Exception:
+        status_manager = StatusManager(existing_status_file)
+        if not status_manager.load():
             run_id = str(uuid.uuid4())[:8]
-            status_file = Path(cwd) / f".cdh-run-{run_id}.status"
-            status = _make_delegate_status(run_id, run_name, task, cwd, model, state="waiting")
-            _write_status_file(status_file, status)
+            status_manager = StatusManager.create_new(
+                run_id, run_name, task, cwd, model, state="waiting", prompt=prompt
+            )
+            # ensure will be called unconditionally after the block for DRY
     else:
         run_id = str(uuid.uuid4())[:8]
-        status_file = Path(cwd) / f".cdh-run-{run_id}.status"
-        status = _make_delegate_status(run_id, run_name, task, cwd, model, state="waiting")
-        _write_status_file(status_file, status)
+        status_manager = StatusManager.create_new(
+            run_id, run_name, task, cwd, model, state="waiting", prompt=prompt
+        )
+        status_manager.ensure_recoverable(run_id, run_name, cwd, model)
+
+    status_file = status_manager.status_file
+    status = status_manager.to_dict()
+    run_id = status.get("run_id") or str(uuid.uuid4())[:8]
+
+    # Self-heal any partial/corrupted status so the wait loop and future --resume are reliable
+    status_manager.ensure_recoverable(run_id, run_name, cwd, model)
+
+    status_manager.set_state("waiting")
 
     while True:
         elapsed = time.time() - start_time
         if elapsed > max_wait:
-            status["state"] = "max_wait_exceeded"
-            status["elapsed_seconds"] = int(elapsed)
-            status["last_poll_at"] = datetime.now().isoformat()
-            status["ended_at"] = datetime.now().isoformat()
-            _write_status_file(status_file, status)
+            status_manager.mark_max_wait_exceeded(elapsed)
             return {
                 "error": f"Waited {int(elapsed)}s for background completion but exceeded --max-wait of {max_wait}s.",
                 "exit_code": -1,
@@ -292,37 +371,49 @@ def _wait_for_background_completion(
                 "run_name": run_name,
             }
 
-        # Update and persist live status (visible to --status while waiting)
-        status["elapsed_seconds"] = int(elapsed)
-        status["last_poll_at"] = datetime.now().isoformat()
-        _write_status_file(status_file, status)
+        # Record poll (lightweight)
+        status_manager.record_poll(elapsed)
 
-        if not getattr(args, "quiet", False):
+        # Throttled status write: keep the .status file fresh for --status / --resume / observers
+        # without hammering the filesystem on every poll (especially for long-running background tasks).
+        last_write = getattr(status_manager, "_last_throttled_write", 0)
+        now = time.time()
+        if (now - last_write) > 15 or elapsed < 5:  # first few + every ~15s
+            try:
+                status_manager.update(last_poll_at=status_manager.get("last_poll_at"))
+                status_manager._last_throttled_write = now
+            except Exception:
+                pass
+
+        if not quiet:
             print(f"[cdh] Still waiting for background run {run_id} ({run_name or ''})... ({int(elapsed)}s elapsed)")
 
         time.sleep(poll_interval)
 
-        # Retry the call — if the background task finished, this should now return the final result
-        result = call_grok_headless(
+        # Resilient polling with RetryPolicy (lightweight, no heavy deps).
+        # Transient CLI / subprocess hiccups during long background waits should not abort the harness.
+        retry = RetryPolicy(max_attempts=3, base_delay=1.5)
+        ok, outcome = retry.run(
+            call_model_headless,
             prompt=prompt,
             cwd=cwd,
             model=model,
             timeout=300,
             max_turns=max_turns,
+            on_error=lambda err, att: status_manager.update(last_poll_error=f"attempt{att}:{str(err)[:200]}"),
         )
+        if ok:
+            result = outcome
+        else:
+            status_manager.update(last_poll_error=str(outcome)[:500])
+            result = {"error": str(outcome), "exit_code": -1}
 
         if not result.get("timed_out"):
-            # Mark completed and leave the status file behind for history / --status
+            # Mark completed using the manager
             exit_code = result.get("exit_code", 0)
-            status["state"] = "completed"
-            status["elapsed_seconds"] = int(elapsed)
-            status["last_poll_at"] = datetime.now().isoformat()
-            status["ended_at"] = datetime.now().isoformat()
-            status["final_exit_code"] = exit_code
-            status["final_status"] = "success" if exit_code in (0, None) else "failure_or_partial"
-            _write_status_file(status_file, status)
+            status_manager.mark_completed(exit_code)
 
-            if not getattr(args, "quiet", False):
+            if not quiet:
                 print(f"[cdh] Background run {run_id} ({run_name or ''}) completed after {int(elapsed)}s total wait.")
             result["waited_for_background"] = True
             result["waited_seconds"] = int(elapsed)
@@ -889,20 +980,20 @@ def main():
     # Resolve version dynamically from package metadata (set by pyproject.toml).
     # Works for pip installs, editable installs, and direct dev execution via shims.
     try:
-        import grok_delegate as _pkg
-        _VERSION = getattr(_pkg, "__version__", "0.2.0")
+        import importlib.metadata
+        _VERSION = importlib.metadata.version("code-delegation-harness")
     except Exception:
-        _VERSION = "0.2.0"
+        _VERSION = "0.2.1"
 
     parser = argparse.ArgumentParser(description="Delegate coding work to Grok")
-    parser.add_argument("--task", required=True, help="The coding task to perform")
-    parser.add_argument("--target-dir", required=True, help="Working directory for the task")
+    parser.add_argument("--task", help="The coding task to perform")
+    parser.add_argument("--target-dir", help="Working directory for the task")
     parser.add_argument("--context", help="Additional context for the task")
     parser.add_argument("--constraints", help="Hard constraints or requirements")
     parser.add_argument("--model", default="grok-build", help="Model to use")
     parser.add_argument("--output-file", help="Optional path to write structured results")
-    parser.add_argument("--timeout", type=int, default=1800, help="Timeout in seconds for the inner Grok run (default: 1800 = 30 minutes)")
-    parser.add_argument("--max-turns", type=int, default=60, help="Maximum turns for the inner Grok run (default: 60)")
+    parser.add_argument("--timeout", type=int, default=1800, help="Timeout in seconds for the inner model run (default: 1800 = 30 minutes)")
+    parser.add_argument("--max-turns", type=int, default=60, help="Maximum turns for the inner model run (default: 60)")
     parser.add_argument("--wait-for-completion", action="store_true", help="If the inner run times out, keep polling/waiting for background completion instead of failing immediately")
     parser.add_argument("--max-wait", type=int, default=7200, help="Maximum total seconds to wait for a background run to complete (default: 7200 = 2 hours)")
     parser.add_argument("--poll-interval", type=int, default=60, help="Seconds between polls when waiting for background completion (default: 60)")
@@ -934,6 +1025,24 @@ def main():
     globals()["_verbosity"] = verbosity
     globals()["_vprint"] = _vprint
 
+    # Operational / standalone commands that do not require --task / --target-dir
+    is_standalone = bool(
+        args.status or
+        args.resume or
+        (args.prune is not None) or
+        args.dry_run
+    )
+
+    if not is_standalone:
+        if not args.task:
+            parser.error("--task is required")
+        if not args.target_dir:
+            parser.error("--target-dir is required")
+
+    # Guard against None for any code paths that still assume these are set
+    if not is_standalone and (not args.task or not args.target_dir):
+        sys.exit(1)
+
     if args.resume:
         resume_path = Path(args.resume)
         if not resume_path.exists():
@@ -952,7 +1061,9 @@ def main():
             run_id = data.get("run_id")
             state = data.get("state", "unknown")
             original_target = data.get("target_dir") or "."
-            original_prompt = data.get("original_prompt") or data.get("task", "")
+            # Prefer the full stored prompt (written at launch via StatusManager.create_new)
+            # for faithful resume. Fall back to task snippet or the passed prompt for legacy files.
+            original_prompt = data.get("prompt") or data.get("original_prompt") or data.get("task", "")
             original_model = data.get("model", args.model)
             run_name = data.get("run_name")
 
@@ -990,6 +1101,7 @@ def main():
                 run_name=run_name,
                 task=data.get("task") or original_prompt,
                 existing_status_file=resume_status_file,
+                quiet=quiet,
             )
 
             # Proceed with normal result processing below
@@ -1002,7 +1114,7 @@ def main():
             sys.exit(1)
 
     if args.status:
-        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
+        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "." if args.target_dir else "."
         status_files = sorted(Path(target_dir).glob(".cdh-run-*.status"))
         if not status_files:
             print("No delegate background runs found in", target_dir)
@@ -1052,11 +1164,9 @@ def main():
         prune_completed_status_files(target_dir, max_age_days=args.prune)
         sys.exit(0)
 
-    if not args.target_dir:
-        print("Error: --target-dir is required (unless using --status)")
-        sys.exit(1)
-
-    target_dir = os.path.abspath(args.target_dir)
+    # For real delegation runs (non-standalone), --target-dir was already validated earlier.
+    # Standalone commands (--status/--resume/--prune/--dry-run) may set it optionally or default to ".".
+    target_dir = os.path.abspath(args.target_dir) if getattr(args, "target_dir", None) else "."
     if not os.path.isdir(target_dir):
         print(f"Error: Target directory does not exist: {target_dir}", file=sys.stderr)
         sys.exit(1)
@@ -1070,19 +1180,7 @@ def main():
         _print_dry_run_preview(args, target_dir)
         sys.exit(0)
 
-    # Always create a launch status file for full observability and production reliability.
-    # This makes --status useful for every delegation and enables clean resumption patterns.
-    launch_run_id = str(uuid.uuid4())[:8]
-    launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
-    launch_status = _make_delegate_status(
-        launch_run_id, args.run_name, args.task, target_dir, args.model, state="launched"
-    )
-    launch_status["status_file_path"] = str(launch_status_file)
-    _write_status_file(launch_status_file, launch_status)
-
-    if not getattr(args, "quiet", False):
-        print(f"[cdh] Status: {launch_status_file.name} (launched)")
-
+    # Build the full prompt early so we can store it for high-fidelity recovery/resume
     prompt = build_grok_prompt(
         task=args.task,
         target_dir=target_dir,
@@ -1090,13 +1188,34 @@ def main():
         constraints=args.constraints,
     )
 
+    # Always create a launch status file for full observability and production reliability.
+    # Store the full prompt (plus context) so --resume can faithfully continue the original work.
+    launch_run_id = str(uuid.uuid4())[:8]
+    launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
+    status_manager = StatusManager.create_new(
+        launch_run_id,
+        args.run_name,
+        args.task,
+        target_dir,
+        args.model,
+        state="launched",
+        prompt=prompt,
+        context=args.context,
+        constraints=args.constraints,
+    )
+    launch_status_file = status_manager.status_file
+    launch_status = status_manager.to_dict()
+
+    if not getattr(args, "quiet", False):
+        print(f"[cdh] Status: {launch_status_file.name} (launched)")
+
     if not getattr(args, "quiet", False):
         print(f"[cdh] Starting delegation at {datetime.now().isoformat()}")
         print(f"[cdh] Task: {args.task[:100]}...")
         print(f"[cdh] Working in: {target_dir}")
     # In quiet mode we intentionally print almost nothing here — only errors and final artifacts
 
-    result = call_grok_headless(prompt, cwd=target_dir, model=args.model, timeout=args.timeout, max_turns=args.max_turns)
+    result = call_model_headless(prompt, cwd=target_dir, model=args.model, timeout=args.timeout, max_turns=args.max_turns)
 
     # Handle background / long-running case
     if result.get("timed_out") and args.wait_for_completion:
@@ -1113,6 +1232,7 @@ def main():
             run_name=run_name,
             task=args.task,
             existing_status_file=launch_status_file,
+            quiet=quiet,
         )
 
     # Add metadata

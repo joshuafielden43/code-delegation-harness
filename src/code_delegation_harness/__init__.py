@@ -11,6 +11,7 @@ from .harness import (
     prune_completed_status_files,
     normalize_result,
     render_human_report,
+    RetryPolicy,
     _determine_status,
     _compute_diffs_and_stats,
     _print_dry_run_preview,
@@ -20,15 +21,19 @@ from .harness import (
     _wait_for_background_completion,
 )
 
+from .status import StatusManager
+
 try:
     __version__ = _pkg_version("code-delegation-harness")
 except (PackageNotFoundError, Exception):
-    __version__ = "0.2.0"
+    __version__ = "0.2.1"
 
 __all__ = [
     "main",
     "prune_completed_status_files",
     "normalize_result",
     "render_human_report",
+    "RetryPolicy",
     "__version__",
+    "StatusManager",
 ]
