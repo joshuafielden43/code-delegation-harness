@@ -93,8 +93,6 @@ class StatusManager:
         except json.JSONDecodeError:
             # Try to recover whatever we can (very defensive for long-running recovery)
             try:
-                # Very naive recovery: try to parse as much as possible
-                # For now we just keep an empty dict with a corruption marker
                 self._data = {"_corrupted": True, "raw": raw[:2000]}
             except Exception:
                 self._data = {"_corrupted": True}
@@ -102,6 +100,13 @@ class StatusManager:
         except Exception:
             self._data = {"_corrupted": True}
             return False
+
+    def load_or_recover(self, fallback_data: Optional[dict] = None) -> bool:
+        """Load if possible, otherwise start with fallback data (or empty)."""
+        if self.load():
+            return True
+        self._data = fallback_data or {"_recovered": True, "state": "waiting"}
+        return False
 
     def update(self, **kwargs: Any) -> None:
         """Update fields and persist."""
