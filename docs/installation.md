@@ -2,13 +2,11 @@
 
 ## For Primary Agents (Recommended Path)
 
-For normal day-to-day use as a primary agent, install a specific released version:
+The preferred way to install for normal use is from PyPI:
 
 ```bash
-pip install git+https://github.com/joshuafielden43/code-delegation-harness.git@v0.2.1
+pip install code-delegation-harness
 ```
-
-This gives you a clean, versioned install without pulling the full repository history.
 
 After installation:
 
@@ -17,10 +15,12 @@ gcdh --version
 gcdh --help
 ```
 
-Once the package is published on PyPI, the command will simplify to:
+### Specific Version (from GitHub)
+
+If you need a particular released version before it reaches PyPI:
 
 ```bash
-pip install code-delegation-harness
+pip install git+https://github.com/joshuafielden43/code-delegation-harness.git@v0.2.1
 ```
 
 ## For Bleeding Edge / Development Use

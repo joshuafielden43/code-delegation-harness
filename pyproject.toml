@@ -10,9 +10,9 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-  {name = "Code Delegation Harness Project"}
+  {name = "Joshua Fielden", email = "joshua@fielden.dev"}
 ]
-keywords = ["ai", "llm", "coding", "delegation", "automation", "grok", "agent", "sidecar"]
+keywords = ["ai", "llm", "coding", "delegation", "automation", "grok", "agent", "sidecar", "cli"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 [project.scripts]
