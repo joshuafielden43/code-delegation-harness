@@ -1,0 +1,5 @@
+# Code owners for the code-delegation-harness project
+# Currently solo-maintained. This file exists to make future reviewer
+# requirements meaningful and to document ownership.
+
+* @joshuafielden43
