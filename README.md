@@ -105,7 +105,7 @@ Long-running tasks are well supported:
 - Use `--resume <run-id-or-file>` to re-attach to a background run (smart short-circuit if it already finished).
 - All final human review artifacts reflect the full background/resumption story when relevant.
 
-See the `tests/` directory and `references/` (in the full development tree) for usage examples.
+See the `docs/` directory for usage notes, examples, and case studies.
 
 ### Dry-Run Preview Mode
 
