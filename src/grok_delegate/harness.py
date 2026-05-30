@@ -171,9 +171,10 @@ def _make_delegate_status(run_id: str, run_name: Optional[str], task: Optional[s
 
 
 def _write_status_file(status_file: Path, data: dict) -> None:
-    """Atomic-ish write of delegate status (best effort)."""
+    """Atomic-ish write of delegate status with secure 600 file permissions."""
     try:
         status_file.write_text(json.dumps(data, indent=2))
+        status_file.chmod(0o600)
     except Exception:
         pass
 
