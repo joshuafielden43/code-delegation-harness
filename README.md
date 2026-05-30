@@ -1,38 +1,40 @@
 # code-delegation-harness
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+A simple harness for delegating coding work to LLMs while keeping your main agent clean.
 
-**A universal, production-grade harness for delegating coding work to LLMs.**
+It gives you structured output + reviewable artifacts (JSON + human report + patch) even on long-running tasks, and lets you swap different backends without rewriting your top-level orchestration.
 
-It exists to let you hand off real implementation work without slowly contaminating your own voice, memory, or operating style. You get back clean, structured, highly reviewable artifacts (`result.json` + human `.report.md` + ready-to-apply `.patch`) — even on long-running or background tasks — while your primary agent or persona stays untouched.
-
-Strongest with Grok. Built to work cleanly with other models too.
-
-After cloning:
+## Quick Start
 
 ```bash
+# Clone and install
+git clone https://github.com/joshuafielden43/code-delegation-harness.git
 cd code-delegation-harness
-chmod +x bin/gcdh
-export PATH="$PWD/bin:$PATH"
+pip install -e .
 
+# Try it
 gcdh --help
-gcdh --quiet --task "..." --target-dir /path/to/project --output-file result.json
 ```
 
-The harness is designed to be excellent for both humans and other agents/sidecars.
+Works best with Grok right now, but designed to be usable with other models too.
 
-## Why It Exists
+## Why This Exists
 
-Most people who work seriously with AI coding agents eventually feel the cost of entanglement: their own voice, judgment, and long-term context start getting diluted by the model’s style and assumptions. This harness was built to prevent that.
+Most agent setups mix your long-term context, style, and memory with the actual coding work. Over time that gets messy.
 
-It also exists so you are not locked into any single backend. You can swap in different coding harnesses or models through a consistent interface without rewriting your top-level orchestration or losing the ability to give focused, model-specific direction when you want it.
+This tool tries to keep those concerns separate:
+- Your primary agent/persona stays yours.
+- Coding tasks get handed off to a focused execution environment.
+- You get back clean, reviewable results instead of another giant conversation.
 
-The design deliberately separates the concerns:
+It also gives you the option to swap the backend harness later without having to change how you orchestrate things at the top level.
 
-- You keep your primary directives, memory, and operational role intact.
-- Real coding work is handed to a focused, code-first execution environment.
-- You receive clean, structured output plus high-quality human review artifacts — instead of having to wade through another raw conversation.
+## Current Output
+
+When you run a task with `--output-file`, you get:
+- `result.json` — structured data
+- `result.report.md` — human-readable review document with diffs and observations
+- `result.patch` — ready-to-apply unified diff (when code changed)
 
 The goal is simple: you stay you. The work gets done well. And you only have to review the actual result.
 
