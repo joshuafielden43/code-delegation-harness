@@ -2,9 +2,9 @@
 
 **A universal, production-grade harness for delegating coding work to LLMs.**
 
-It produces clean, structured, highly reviewable artifacts (`result.json` + human `.report.md` + ready-to-apply `.patch`) even for long-running or background tasks — while keeping your primary agent, persona, or workflow clean and focused.
+It exists to let you hand off real implementation work without slowly contaminating your own voice, memory, or operating style. You get back clean, structured, highly reviewable artifacts (`result.json` + human `.report.md` + ready-to-apply `.patch`) — even on long-running or background tasks — while your primary agent or persona stays untouched.
 
-Excellent first-class experience with Grok. Works as a reliable adapter for other models too.
+Strongest with Grok. Built to work cleanly with other models too.
 
 After cloning:
 
@@ -21,11 +21,17 @@ The harness is designed to be excellent for both humans and other agents/sidecar
 
 ## Why It Exists
 
-Most AI coding agents mix implementation with personality, memory, and long-term context. This harness deliberately separates the concerns:
+Most people who work seriously with AI coding agents eventually feel the cost of entanglement: their own voice, judgment, and long-term context start getting diluted by the model’s style and assumptions. This harness was built to prevent that.
+
+It also exists so you are not locked into any single backend. You can swap in different coding harnesses or models through a consistent interface without rewriting your top-level orchestration or losing the ability to give focused, model-specific direction when you want it.
+
+The design deliberately separates the concerns:
 
 - You keep your primary directives, memory, and operational role intact.
-- Coding work (features, refactors, scripts, tests, cleanups) is delegated to a focused, code-first execution environment.
-- You get back structured output plus excellent human review artifacts instead of raw conversation.
+- Real coding work is handed to a focused, code-first execution environment.
+- You receive clean, structured output plus high-quality human review artifacts — instead of having to wade through another raw conversation.
+
+The goal is simple: you stay you. The work gets done well. And you only have to review the actual result.
 
 ## Current Output (What You Actually Review)
 
@@ -155,4 +161,4 @@ MIT
 
 ---
 
-Built as a focused coding harness. The priority is useful, low-friction delegation with excellent output for the person who has to review and accept the actual changes.
+Built as a focused coding harness. The priority is useful, low-friction delegation with excellent output — for the person who still has to read, understand, and take responsibility for the final result.
