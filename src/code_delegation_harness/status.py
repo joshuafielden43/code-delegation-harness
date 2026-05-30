@@ -109,17 +109,41 @@ class StatusManager:
         return False
 
     def ensure_recoverable(self, run_id: str, run_name: Optional[str], cwd: str, model: str) -> None:
-        """If the status is corrupted or missing key fields, repair it enough to continue recovery."""
-        if not self._data or self._data.get("_corrupted"):
-            repaired = {
-                "run_id": run_id,
-                "run_name": run_name,
-                "target_dir": cwd,
-                "model": model,
-                "state": "waiting",
-                "_recovered": True,
-            }
-            self._data.update(repaired)
+        """
+        Self-healing for long-running resilience.
+
+        If the status is corrupted or missing critical fields (run_id, target_dir, state, model),
+        repair it with the caller-supplied context so --resume and wait loops can still function.
+        Never loses existing good data; only fills gaps.
+        """
+        dirty = False
+        if not self._data:
+            self._data = {}
+            dirty = True
+
+        if self._data.get("_corrupted") or not self._data.get("run_id"):
+            self._data["run_id"] = run_id
+            dirty = True
+        if not self._data.get("target_dir"):
+            self._data["target_dir"] = cwd
+            dirty = True
+        if not self._data.get("model"):
+            self._data["model"] = model
+            dirty = True
+        if not self._data.get("state"):
+            self._data["state"] = "waiting"
+            dirty = True
+        if run_name and not self._data.get("run_name"):
+            self._data["run_name"] = run_name
+            dirty = True
+
+        # Mark recovery for auditability without overwriting a real prompt/task if present
+        if self._data.get("_corrupted") or self._data.get("_recovered") is None:
+            if "_recovered" not in self._data:
+                self._data["_recovered"] = True
+            dirty = True
+
+        if dirty:
             self._atomic_write()
 
     def update(self, **kwargs: Any) -> None:

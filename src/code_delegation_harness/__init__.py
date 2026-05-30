@@ -11,6 +11,7 @@ from .harness import (
     prune_completed_status_files,
     normalize_result,
     render_human_report,
+    RetryPolicy,
     _determine_status,
     _compute_diffs_and_stats,
     _print_dry_run_preview,
@@ -32,6 +33,7 @@ __all__ = [
     "prune_completed_status_files",
     "normalize_result",
     "render_human_report",
+    "RetryPolicy",
     "__version__",
     "StatusManager",
 ]
