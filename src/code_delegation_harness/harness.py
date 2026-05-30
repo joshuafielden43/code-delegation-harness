@@ -85,6 +85,11 @@ INSTRUCTIONS:
 - If you need to create new files or directories, do so.
 - Do not add unnecessary personality or commentary. Treat this as a professional coding handoff.
 
+**PLANNING & COMPLETENESS (especially for complex or multi-part tasks):**
+- For any task with multiple components, commands, safety rules, or significant logic: First create an explicit plan or checklist of everything that needs to be built, based on the full task description.
+- Implement against that plan.
+- Before emitting the final summary, perform a deliberate self-review: Walk through the plan and confirm every major item is actually implemented and working (not left as a stub, placeholder, or "would do X"). If something must be deferred, clearly document it with justification and the minimal next step.
+
 **IMPORTANT - FINAL OUTPUT FORMAT:**
 When you are completely finished, end your response with a clearly marked structured summary in this exact format:
 
