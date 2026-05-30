@@ -108,6 +108,20 @@ class StatusManager:
         self._data = fallback_data or {"_recovered": True, "state": "waiting"}
         return False
 
+    def ensure_recoverable(self, run_id: str, run_name: Optional[str], cwd: str, model: str) -> None:
+        """If the status is corrupted or missing key fields, repair it enough to continue recovery."""
+        if not self._data or self._data.get("_corrupted"):
+            repaired = {
+                "run_id": run_id,
+                "run_name": run_name,
+                "target_dir": cwd,
+                "model": model,
+                "state": "waiting",
+                "_recovered": True,
+            }
+            self._data.update(repaired)
+            self._atomic_write()
+
     def update(self, **kwargs: Any) -> None:
         """Update fields and persist."""
         self._data.update(kwargs)
