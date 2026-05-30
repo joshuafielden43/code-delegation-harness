@@ -5,38 +5,25 @@ All notable changes to the Code Delegation Harness (gcdh) will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-05-30
 
-### Added
-- `--dry-run` mode for previewing the exact prompt, configuration, and expected artifacts without launching any delegation or writing files.
-- `--prune [N]` (default 7 days) to clean up old completed/failed status files.
-- Non-fatal warning when the target directory is not a git repository (affects diff/patch quality).
-- `missing_summary_marker` error type in structured output when the inner agent omits the `=== DELEGATION SUMMARY ===` block.
-- Always write launch-time status files for full observability (even for short runs when using long-running flags).
-- `--version` flag.
+**First public release of the Code Delegation Harness** — now positioned as a universal tool for delegating coding work to LLMs (with excellent first-class support for Grok).
 
-### Changed
-- Repositioned as production-ready (removed "temporary kludge" framing from user-facing documentation while preserving the dual public tool + sidecar dogfooding narrative).
-- Improved `--status` output to clearly separate active vs completed/historical runs.
-- Stronger final artifact summary printing when using `--output-file`.
-- Status files now persist after background completion for better history and resumption.
+### Highlights
+- Full rename and repositioning as `code-delegation-harness` (distribution name, package, documentation, and branding) for broad applicability beyond any single model.
+- Internal module renamed from `grok_delegate` to `code_delegation_harness`.
+- Status files updated to the clean `.cdh-run-*.status` naming.
+- Professional `gcdh` CLI with full `--quiet` / `--verbose`, `--dry-run`, long-running support (`--wait-for-completion`, `--status`, `--resume`, `--prune`), and high-quality artifacts (`.json` + `.report.md` + `.patch`).
+- Added proper public documentation (`docs/usage-notes.md`, examples, and case study).
+- Significant improvements to the customer-facing README with clearer positioning and Honey's framing contributions around entanglement prevention and backend flexibility.
+- Security improvement: status files now written with `0o600` permissions.
+- Strong emphasis on clean separation between the primary agent's context and delegated implementation work.
 
-### Fixed
-- Status file writing during long-running waits (previously could crash on undefined dict).
-- Various robustness improvements around background/resume flows and metadata propagation.
+This release represents the completion of the initial public launch preparation, including deep internal cleanup and documentation for a universal audience.
 
-## [0.2.0] - 2026-05 (Production Push)
+## [0.1.0] - 2026-05-30 (Pre-release)
 
-Initial production positioning with mature long-running support, rich human review reports, and reliable artifact generation even after background execution.
-
-Key features at this point:
-- Full structured output + high-quality `.report.md` + ready-to-apply `.patch`
-- Persistent `.grok-delegate-run-*.status` files with `--status` and smart `--resume`
-- `--wait-for-completion` with automatic recovery from inner timeouts
-- `--dry-run` preview capability
-- Clean handling of no-change / read-only work via observations
-
-*Note: Earlier development was tracked primarily in the Grok-Honey dialogue rather than this changelog.*
+Initial public release candidate (pre-rename work).
 
 ## [0.1.0] - 2026-05-30
 
