@@ -895,14 +895,14 @@ def main():
         _VERSION = "0.2.1"
 
     parser = argparse.ArgumentParser(description="Delegate coding work to Grok")
-    parser.add_argument("--task", required=True, help="The coding task to perform")
-    parser.add_argument("--target-dir", required=True, help="Working directory for the task")
+    parser.add_argument("--task", help="The coding task to perform")
+    parser.add_argument("--target-dir", help="Working directory for the task")
     parser.add_argument("--context", help="Additional context for the task")
     parser.add_argument("--constraints", help="Hard constraints or requirements")
     parser.add_argument("--model", default="grok-build", help="Model to use")
     parser.add_argument("--output-file", help="Optional path to write structured results")
-    parser.add_argument("--timeout", type=int, default=1800, help="Timeout in seconds for the inner Grok run (default: 1800 = 30 minutes)")
-    parser.add_argument("--max-turns", type=int, default=60, help="Maximum turns for the inner Grok run (default: 60)")
+    parser.add_argument("--timeout", type=int, default=1800, help="Timeout in seconds for the inner model run (default: 1800 = 30 minutes)")
+    parser.add_argument("--max-turns", type=int, default=60, help="Maximum turns for the inner model run (default: 60)")
     parser.add_argument("--wait-for-completion", action="store_true", help="If the inner run times out, keep polling/waiting for background completion instead of failing immediately")
     parser.add_argument("--max-wait", type=int, default=7200, help="Maximum total seconds to wait for a background run to complete (default: 7200 = 2 hours)")
     parser.add_argument("--poll-interval", type=int, default=60, help="Seconds between polls when waiting for background completion (default: 60)")
@@ -933,6 +933,24 @@ def main():
     # Make verbosity available to the rest of main
     globals()["_verbosity"] = verbosity
     globals()["_vprint"] = _vprint
+
+    # Operational / standalone commands that do not require --task / --target-dir
+    is_standalone = bool(
+        args.status or
+        args.resume or
+        (args.prune is not None) or
+        args.dry_run
+    )
+
+    if not is_standalone:
+        if not args.task:
+            parser.error("--task is required")
+        if not args.target_dir:
+            parser.error("--target-dir is required")
+
+    # Guard against None for any code paths that still assume these are set
+    if not is_standalone and (not args.task or not args.target_dir):
+        sys.exit(1)
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -1002,7 +1020,7 @@ def main():
             sys.exit(1)
 
     if args.status:
-        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
+        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "." if args.target_dir else "."
         status_files = sorted(Path(target_dir).glob(".cdh-run-*.status"))
         if not status_files:
             print("No delegate background runs found in", target_dir)
@@ -1048,15 +1066,19 @@ def main():
         sys.exit(0)
 
     if args.prune is not None:
-        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
+        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "." if args.target_dir else "."
         prune_completed_status_files(target_dir, max_age_days=args.prune)
         sys.exit(0)
 
+<<<<<<< Updated upstream
     if not args.target_dir:
         print("Error: --target-dir is required (unless using --status)")
         sys.exit(1)
 
     target_dir = os.path.abspath(args.target_dir)
+=======
+    target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
+>>>>>>> Stashed changes
     if not os.path.isdir(target_dir):
         print(f"Error: Target directory does not exist: {target_dir}", file=sys.stderr)
         sys.exit(1)
