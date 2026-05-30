@@ -31,6 +31,7 @@ class StatusManager:
         "completed",
         "completed_no_changes",
         "failed",
+        "crashed",          # New: detected dead background run
         "max_wait_exceeded",
     }
 
@@ -66,6 +67,7 @@ class StatusManager:
             "started_at": datetime.now().isoformat(),
             "elapsed_seconds": 0,
             "last_poll_at": None,
+            "pid": os.getpid(),
         }
 
         if prompt:
@@ -176,16 +178,61 @@ class StatusManager:
 
     def record_poll(self, elapsed: float, error: Optional[str] = None) -> None:
         self._data["elapsed_seconds"] = int(elapsed)
-        self._data["last_poll_at"] = datetime.now().isoformat()
+        now = datetime.now().isoformat()
+        self._data["last_poll_at"] = now
+        self._data["last_heartbeat_at"] = now  # Treat poll as a heartbeat
         if error:
             self._data["last_poll_error"] = error[:500]
         # Throttled write happens in caller for now (keeps this lightweight)
+
+    def heartbeat(self, message: str = "") -> None:
+        """Write an explicit heartbeat. Call this from long-running inner loops
+        or from the harness wrapper to prove the process is still alive.
+        """
+        now = datetime.now().isoformat()
+        self._data["last_heartbeat_at"] = now
+        if message:
+            self._data["last_heartbeat_message"] = message[:200]
+        # Use the throttled path if available, otherwise direct write
+        try:
+            self._atomic_write()
+        except Exception:
+            pass
+
+    def mark_crashed(self, reason: str = "No heartbeat detected for extended period - background run appears dead") -> None:
+        """Mark this run as crashed. Useful for recovery logic when a
+        background task dies without properly writing a failed/completed state.
+        """
+        self._data["state"] = "crashed"
+        self._data["crashed_at"] = datetime.now().isoformat()
+        self._data["crash_reason"] = reason
+        self._atomic_write()
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
     def to_dict(self) -> dict[str, Any]:
         return dict(self._data)
+
+    def looks_dead(self, max_silence_seconds: int = 300) -> bool:
+        """Returns True if this run is in a 'running' or 'waiting' state but
+        has had no heartbeat/poll for longer than max_silence_seconds.
+        Useful for external monitors or --status to flag crashed background tasks.
+        """
+        state = self._data.get("state")
+        if state not in ("running", "waiting", "launched"):
+            return False
+
+        last = self._data.get("last_heartbeat_at") or self._data.get("last_poll_at")
+        if not last:
+            return False
+
+        try:
+            last_dt = datetime.fromisoformat(last)
+            age = (datetime.now() - last_dt).total_seconds()
+            return age > max_silence_seconds
+        except Exception:
+            return False
 
     def write(self) -> None:
         """Force write current state."""
@@ -209,3 +256,49 @@ class StatusManager:
     @property
     def run_id(self) -> str:
         return self._data.get("run_id", "")
+
+
+# --- Module-level crash protection support (used by harness launcher) ---
+# Kept here for better encapsulation with the rest of the status machinery.
+_ACTIVE_STATUS_FILE: Optional[Path] = None
+
+
+def _mark_active_run_crashed(reason: str = "Harness process terminated unexpectedly") -> None:
+    """Best-effort attempt to mark the current active run as crashed on exit/signal."""
+    global _ACTIVE_STATUS_FILE
+    if _ACTIVE_STATUS_FILE and _ACTIVE_STATUS_FILE.exists():
+        try:
+            sm = StatusManager(_ACTIVE_STATUS_FILE)
+            if sm.load():
+                current_state = sm.get("state", "")
+                if current_state in ("launched", "waiting", "running"):
+                    sm.mark_crashed(reason)
+                    print(f"[cdh] Emergency: marked run as crashed on process exit ({reason})", file=sys.stderr)
+        except Exception:
+            pass
+    _ACTIVE_STATUS_FILE = None
+
+
+def register_crash_protection(status_file: Path) -> None:
+    """Register atexit + signal handlers so we try to mark the run crashed if we die.
+    This is the public entry point used by the harness.
+    """
+    global _ACTIVE_STATUS_FILE
+    _ACTIVE_STATUS_FILE = Path(status_file)
+
+    import atexit
+    import signal as _signal
+    import os as _os
+
+    atexit.register(_mark_active_run_crashed, "Process exited (atexit)")
+
+    def _signal_handler(signum, frame):
+        _mark_active_run_crashed(f"Received signal {signum}")
+        _signal.signal(signum, _signal.SIG_DFL)
+        _os.kill(_os.getpid(), signum)
+
+    for sig in (_signal.SIGTERM, _signal.SIGINT):
+        try:
+            _signal.signal(sig, _signal_handler)
+        except (ValueError, OSError):
+            pass

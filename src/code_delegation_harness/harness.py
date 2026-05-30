@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .status import StatusManager
+from .status import StatusManager, register_crash_protection
 
 
 class RetryPolicy:
@@ -85,13 +85,26 @@ INSTRUCTIONS:
 - If you need to create new files or directories, do so.
 - Do not add unnecessary personality or commentary. Treat this as a professional coding handoff.
 
+**CRITICAL FOR LONG-RUNNING / BACKGROUND TASKS (SURVIVE DEATH):**
+- Write a lightweight checkpoint file frequently (e.g. `PROGRESS.json` or `TASK_STATE.md` in the target dir).
+- Example format for PROGRESS.json:
+  {{
+    "completed": ["implemented X", "added tests for Y"],
+    "current_plan": ["next: Z", "then: W"],
+    "open_issues": ["edge case in foo()"],
+    "last_checkpoint": "2026-05-30T14:22"
+  }}
+- Checkpoint after every major change, after finishing a function/class, or at least every 5-8 tool uses.
+- This is your lifeline if the process dies. The next invocation (or a human) can read it and continue cleanly.
+- Never rely only on your final summary — checkpoint early and often.
+
 **PLANNING & COMPLETENESS (especially for complex or multi-part tasks):**
 - For any task with multiple components, commands, safety rules, or significant logic: First create an explicit plan or checklist of everything that needs to be built, based on the full task description.
 - Implement against that plan.
 - Before emitting the final summary, perform a deliberate self-review: Walk through the plan and confirm every major item is actually implemented and working (not left as a stub, placeholder, or "would do X"). If something must be deferred, clearly document it with justification and the minimal next step.
 
-**IMPORTANT - FINAL OUTPUT FORMAT:**
-When you are completely finished, end your response with a clearly marked structured summary in this exact format:
+**MANDATORY FINAL OUTPUT FORMAT (NON-NEGOTIABLE):**
+You MUST end your response with the exact marker below. This is required for automated parsing. Do not omit it, paraphrase it, or place it anywhere except at the very end.
 
 === DELEGATION SUMMARY ===
 SUMMARY: <One paragraph plain-English summary of what was accomplished. Be precise about behavior changes.>
@@ -112,6 +125,10 @@ VERIFICATION:
 
 NEXT_STEPS (if any):
 - <Recommended follow-up actions>
+
+=== END SUMMARY ===
+
+If you forget the exact markers, the harness cannot automatically extract the results. Always terminate with both the opening and closing markers exactly as shown.
 
 CHANGE_SUMMARY:
 - For each modified file, briefly note the net effect (e.g. "Added input validation and error handling", "Refactored X into Y for clarity").
@@ -362,6 +379,7 @@ def _wait_for_background_completion(
     status_manager.ensure_recoverable(run_id, run_name, cwd, model)
 
     status_manager.set_state("waiting")
+    status_manager.heartbeat("entered wait-for-completion polling loop")
 
     while True:
         elapsed = time.time() - start_time
@@ -392,6 +410,8 @@ def _wait_for_background_completion(
 
         if not quiet:
             print(f"[cdh] Still waiting for background run {run_id} ({run_name or ''})... ({int(elapsed)}s elapsed)")
+
+        status_manager.heartbeat(f"polling after {int(elapsed)}s")
 
         time.sleep(poll_interval)
 
@@ -431,12 +451,20 @@ def parse_delegation_summary(text: str) -> dict:
     """
     Extract the structured DELEGATION SUMMARY section if present.
     Now also captures CHANGE_SUMMARY and ERRORS sections when present.
+
+    If the exact marker is missing, attempts a best-effort extraction and
+    explicitly marks parsed=False with a clear warning. This helps diagnose
+    cases where the model omitted the required block (common in long-running runs).
     """
     marker = "=== DELEGATION SUMMARY ==="
     end_marker = "=== END SUMMARY ==="
 
     if marker not in text:
-        return {"raw_text": text, "parsed": False}
+        # Best-effort fallback: still try to pull out obvious sections if the model was close
+        fallback = _best_effort_summary_extraction(text)
+        fallback["parsed"] = False
+        fallback["warning"] = "Exact '=== DELEGATION SUMMARY ===' marker was missing. The model did not follow the required output format."
+        return fallback
 
     try:
         start = text.rfind(marker) + len(marker)
@@ -502,6 +530,81 @@ def parse_delegation_summary(text: str) -> dict:
 
     except Exception as e:
         return {"raw_text": text, "parsed": False, "parse_error": str(e)}
+
+
+def _best_effort_summary_extraction(text: str) -> dict:
+    """Crude fallback when the model omitted the exact marker. Extracts what it can."""
+    result = {
+        "summary": "",
+        "files_created": [],
+        "files_modified": [],
+        "files_deleted": [],
+        "verification": "",
+        "next_steps": "",
+        "change_summary": "",
+        "errors": [],
+        "observations": "",
+    }
+
+    lines = text.splitlines()
+    current = None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        if "SUMMARY" in upper and ":" in stripped:
+            current = "summary"
+            result["summary"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            if current in ("files_created", "files_modified", "files_deleted"):
+                result[current].append(stripped[2:].strip())
+        # Very rough heuristics for other sections
+        if "file" in stripped.lower() and "create" in stripped.lower():
+            current = "files_created"
+        elif "file" in stripped.lower() and "modif" in stripped.lower():
+            current = "files_modified"
+
+    return result
+
+
+def _propagate_background_flags(source: dict, target: dict) -> None:
+    """Central helper to reduce duplication when copying background/resume flags."""
+    for key in ("run_id", "run_name", "waited_for_background", "waited_seconds",
+                "resumed", "resumed_from_crash"):
+        if key in source and key not in target:
+            target[key] = source[key]
+
+
+def load_checkpoint_context(target_dir: str) -> str:
+    """Look for checkpoint files the agent is instructed to write for long-running resilience.
+    Returns a ready-to-inject string (or empty if nothing useful found).
+    This is the key mechanism for recovering from background process death.
+    """
+    target = Path(target_dir)
+    candidates = [
+        target / "PROGRESS.json",
+        target / "TASK_PROGRESS.json",
+        target / "TASK_STATE.md",
+        target / ".progress.json",
+        target / "checkpoint.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                content = p.read_text().strip()
+                if content:
+                    return (
+                        f"\n\n=== PREVIOUS RUN CHECKPOINT (loaded from {p.name}) ===\n"
+                        f"{content}\n"
+                        "=== END CHECKPOINT ===\n\n"
+                        "The previous background run appears to have died or been interrupted. "
+                        "Resume work from the checkpoint above. Do not repeat already-completed items "
+                        "unless the checkpoint indicates they are incomplete or broken."
+                    )
+            except Exception:
+                continue
+    return ""
 
 
 def _determine_status(raw_result: dict, has_changes: bool) -> str:
@@ -760,6 +863,13 @@ def render_human_report(result: dict) -> str:
             lines.append("This delegation was resumed from a previous background wait using --resume.")
             lines.append("")
 
+        if result.get("resumed_from_crash"):
+            lines.append("## ⚠️ Recovery from Crashed Run")
+            lines.append("This run was previously marked as crashed (no heartbeat / process death).")
+            lines.append("Recovery was attempted using any checkpoints the previous agent left behind.")
+            lines.append("Review carefully — the prior execution did not complete cleanly.")
+            lines.append("")
+
         # Quick Review Checklist (high-signal for end-result review)
         if created or modified or deleted:
             lines.append("## Quick Review Checklist")
@@ -1007,11 +1117,42 @@ def main():
     parser.add_argument("--resume", help="Resume waiting for a previous background run using its run_id or path to a .status file")
     parser.add_argument("--dry-run", action="store_true", help="Preview the full prompt, effective flags, target directory, and expected output artifacts without launching the inner agent or writing any status/output files")
     parser.add_argument("--prune", type=int, nargs="?", const=7, help="Prune completed/failed status files older than N days (default: 7)")
+    parser.add_argument("--reap-dead", action="store_true", help="Scan for background runs that have gone silent (no heartbeat) and mark them as crashed. Useful after host reboots or wrapper deaths.")
+    parser.add_argument("--detach", action="store_true", help="Launch in detached/daemon mode (uses nohup + setsid style so the harness survives terminal close and parent death better). Best used with --wait-for-completion or when you want true fire-and-forget.")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output. Only show errors and final artifact locations.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show more detailed internal progress messages.")
     parser.add_argument("--version", action="version", version=f"code-delegation-harness {_VERSION}")
 
     args = parser.parse_args()
+
+    # --- Detach / daemon mode handling (early, before any heavy work) ---
+    if args.detach:
+        import os
+        import sys
+
+        # Build the command without --detach to avoid re-detaching
+        cmd = [sys.executable, sys.argv[0]] + [a for a in sys.argv[1:] if a != "--detach"]
+
+        # Use nohup + setsid style for good detachment on Unix
+        try:
+            # Redirect stdio to avoid hanging the parent terminal
+            with open(os.devnull, "r") as devnull_in, \
+                 open(os.devnull, "a") as devnull_out:
+                detached_cmd = ["nohup"] + cmd
+                proc = subprocess.Popen(
+                    detached_cmd,
+                    stdin=devnull_in,
+                    stdout=devnull_out,
+                    stderr=devnull_out,
+                    preexec_fn=os.setsid,   # New session so it survives parent death
+                    close_fds=True,
+                )
+            print(f"[cdh] Launched in detached mode (PID {proc.pid}).")
+            print("The run will continue independently. Use --status or --resume to monitor.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"[cdh] Failed to detach: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Set verbosity level: 0 = quiet, 1 = normal, 2 = verbose
     if args.quiet:
@@ -1095,7 +1236,37 @@ def main():
 
             resume_status_file = resume_path if resume_path.suffix == ".status" else None
 
-            # Enter waiting mode using the saved parameters
+            # Re-register crash protection for the resumed wait (in case we die while polling)
+            if resume_status_file:
+                register_crash_protection(resume_status_file)
+
+            # === Auto-recovery for crashed runs ===
+            if state == "crashed":
+                print(f"[cdh] WARNING: This run was previously marked as crashed (no heartbeat). Attempting recovery from checkpoints...")
+                checkpoint_ctx = load_checkpoint_context(original_target)
+                if checkpoint_ctx:
+                    print("[cdh] Found usable checkpoint data. Augmenting prompt for recovery.")
+                    original_prompt = (
+                        original_prompt
+                        + "\n\n"
+                        + "=== RECOVERY MODE: PREVIOUS RUN CRASHED ===\n"
+                        + "The previous background execution of this task died or was interrupted without completing.\n"
+                        + "Resume from the checkpoint below if present. Prioritize finishing the remaining work cleanly.\n"
+                        + checkpoint_ctx
+                        + "\n=== END RECOVERY CONTEXT ===\n"
+                    )
+                else:
+                    print("[cdh] No checkpoint files found in target directory. Resuming with original prompt only (best effort).")
+
+                # Update status to reflect we're attempting recovery
+                try:
+                    sm = StatusManager(resume_status_file) if resume_status_file else None
+                    if sm and sm.load():
+                        sm.heartbeat("resuming from crashed state")
+                except Exception:
+                    pass
+
+            # Enter waiting mode using the (possibly augmented) prompt
             result = _wait_for_background_completion(
                 prompt=original_prompt,
                 cwd=original_target,
@@ -1113,6 +1284,11 @@ def main():
             # (We override args for downstream consistency)
             args.target_dir = original_target
             target_dir = os.path.abspath(original_target)
+
+            # Mark that this was a recovery from a crashed background run
+            if state == "crashed":
+                if isinstance(result, dict):
+                    result["resumed_from_crash"] = True
 
         except Exception as e:
             print(f"Failed to resume run: {e}")
@@ -1141,6 +1317,14 @@ def main():
                     "final_status": data.get("final_status") or data.get("state"),
                 }
                 if entry["state"] in ("waiting", "launched", "running"):
+                    # Use StatusManager for better dead-run detection
+                    try:
+                        sm = StatusManager(sf)
+                        if sm.load() and sm.looks_dead(max_silence_seconds=300):
+                            entry["state"] = "crashed (no heartbeat)"
+                            entry["dead"] = True
+                    except Exception:
+                        pass
                     active.append(entry)
                 else:
                     completed.append(entry)
@@ -1167,6 +1351,21 @@ def main():
     if args.prune is not None:
         target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
         prune_completed_status_files(target_dir, max_age_days=args.prune)
+        sys.exit(0)
+
+    if args.reap_dead:
+        target_dir = os.path.abspath(args.target_dir) if getattr(args, "target_dir", None) else "."
+        reaped = 0
+        for sf in Path(target_dir).glob(".cdh-run-*.status"):
+            try:
+                sm = StatusManager(sf)
+                if sm.load() and sm.looks_dead(max_silence_seconds=300):
+                    sm.mark_crashed("Reaped by --reap-dead (no heartbeat for >5 minutes)")
+                    reaped += 1
+                    print(f"[cdh] Reaped dead run: {sf.name}")
+            except Exception:
+                pass
+        print(f"[cdh] Reaped {reaped} dead background runs.")
         sys.exit(0)
 
     # For real delegation runs (non-standalone), --target-dir was already validated earlier.
@@ -1211,6 +1410,16 @@ def main():
     launch_status_file = status_manager.status_file
     launch_status = status_manager.to_dict()
 
+    status_manager.heartbeat("status file created, about to launch inner model")
+
+    # Register crash protection so if this harness process dies (kill, OOM, terminal close, etc.)
+    # we try to mark the run as crashed instead of leaving it in "launched"/"running" forever.
+    register_crash_protection(launch_status_file)
+
+    # Mark as running right before the risky model call
+    status_manager.set_state("running")
+    status_manager.heartbeat("about to invoke inner model")
+
     if not getattr(args, "quiet", False):
         print(f"[cdh] Status: {launch_status_file.name} (launched)")
 
@@ -1220,7 +1429,11 @@ def main():
         print(f"[cdh] Working in: {target_dir}")
     # In quiet mode we intentionally print almost nothing here — only errors and final artifacts
 
-    result = call_model_headless(prompt, cwd=target_dir, model=args.model, timeout=args.timeout, max_turns=args.max_turns)
+    try:
+        result = call_model_headless(prompt, cwd=target_dir, model=args.model, timeout=args.timeout, max_turns=args.max_turns)
+    except Exception as e:
+        status_manager.mark_crashed(f"Exception during model call: {str(e)[:300]}")
+        raise
 
     # Handle background / long-running case
     if result.get("timed_out") and args.wait_for_completion:
@@ -1250,9 +1463,7 @@ def main():
     }
 
     # Propagate background/resume identifiers for consistent artifacts + reports
-    for key in ("run_id", "run_name", "waited_for_background", "waited_seconds", "resumed"):
-        if key in result and key not in result["metadata"]:
-            result["metadata"][key] = result[key]
+    _propagate_background_flags(result, result["metadata"])
 
     # Produce clean structured output (the main improvement)
     clean_result = normalize_result(result, target_dir=target_dir)
@@ -1269,9 +1480,7 @@ def main():
         })
 
     # Propagate background completion / resume flags to clean result for consistent artifacts
-    for k in ("waited_for_background", "waited_seconds", "run_id", "run_name", "resumed"):
-        if k in result and k not in clean_result:
-            clean_result[k] = result[k]
+    _propagate_background_flags(result, clean_result)
 
     # If we created a launch status file, make sure the run_id is known
     if launch_run_id and "run_id" not in clean_result:
