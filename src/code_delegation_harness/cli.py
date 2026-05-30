@@ -2,7 +2,7 @@
 CLI entry point for the `gcdh` command.
 
 This module provides the console_script target:
-    gcdh = "grok_delegate.cli:main"
+    gcdh = "code_delegation_harness.cli:main"
 """
 from .harness import main
 

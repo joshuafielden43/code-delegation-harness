@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Allow importing the script under test (no package yet)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from grok_delegate import normalize_result, _determine_status, _compute_diffs_and_stats, render_human_report
+from code_delegation_harness import normalize_result, _determine_status, _compute_diffs_and_stats, render_human_report
 
 
 class TestNormalizeResult(unittest.TestCase):

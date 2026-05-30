@@ -29,7 +29,7 @@ classifiers = [
 [project.scripts]
 # After `pip install -e .` (or `pip install .`), users get the professional command:
 #   gcdh --help
-gcdh = "grok_delegate.cli:main"
+gcdh = "code_delegation_harness.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/joshuafielden43/code-delegation-harness"

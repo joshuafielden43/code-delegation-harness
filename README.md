@@ -94,7 +94,7 @@ This design makes it a strong primitive for building reliable delegation into la
 Long-running tasks are well supported:
 - Use `--timeout` (seconds) and `--max-turns` to give big jobs room to breathe.
 - Add `--wait-for-completion --max-wait 14400` (for example) and the wrapper will automatically poll until a background run finishes, then deliver the complete artifacts (full .json + .report.md + .patch + .run-meta.json).
-- Persistent `.grok-delegate-run-<id>.status` files are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded).
+- Persistent `.cdh-run-<id>.status` files are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded).
 - Use `--status --target-dir /path` at any time to see both active and completed runs in that tree.
 - Use `--resume <run-id-or-file>` to re-attach to a background run (smart short-circuit if it already finished).
 - All final human review artifacts reflect the full background/resumption story when relevant.
@@ -130,7 +130,7 @@ It delivers clean, reviewable end results even on long-running tasks:
 - High-signal human `.report.md` with checklists and "How to Review This Change" guidance
 - Ready-to-apply `.patch`
 - `.run-meta.json` for reproducibility
-- Persistent status files (`.grok-delegate-run-*.status`) with full launch → wait → completion lifecycle, queryable via `--status`
+- Persistent status files (`.cdh-run-*.status`) with full launch → wait → completion lifecycle, queryable via `--status`
 
 Long-running support is first-class:
 - `--timeout` / `--max-turns`
@@ -145,7 +145,7 @@ The code in this repository is the current production version.
 
 ## Development & Contributing
 
-Core implementation lives in `src/grok_delegate/harness.py` (with shims in `bin/gcdh` and `scripts/grok_delegate.py`; also `python -m grok_delegate` after install or with PYTHONPATH=src).
+Core implementation lives in `src/code_delegation_harness/harness.py` (with shims in `bin/gcdh`; `scripts/grok_delegate.py` is a legacy compatibility shim). You can also run with `python -m code_delegation_harness` after install or with PYTHONPATH=src.
 
 See `CHANGELOG.md` for release history. Full development notes live in the upstream development tree.
 

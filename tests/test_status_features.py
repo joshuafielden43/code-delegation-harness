@@ -12,13 +12,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from grok_delegate import prune_completed_status_files, _make_delegate_status, _write_status_file
+from code_delegation_harness import prune_completed_status_files, _make_delegate_status, _write_status_file
 
 # Internal functions for testing - import directly from the implementation module
 import importlib.util
 spec = importlib.util.spec_from_file_location(
     "grok_delegate_impl",
-    Path(__file__).parent.parent / "src" / "grok_delegate" / "harness.py"
+    Path(__file__).parent.parent / "src" / "code_delegation_harness" / "harness.py"
 )
 grok_delegate_impl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(grok_delegate_impl)
@@ -32,14 +32,14 @@ class TestStatusFilePruning(unittest.TestCase):
 
             # Create an old completed status file
             old_run_id = "old12345"
-            old_sf = td / f".grok-delegate-run-{old_run_id}.status"
+            old_sf = td / f".cdh-run-{old_run_id}.status"
             old_data = _make_delegate_status(old_run_id, "old-run", "some task", str(td), "grok-build", "completed")
             old_data["ended_at"] = (datetime.now() - timedelta(days=10)).isoformat()
             _write_status_file(old_sf, old_data)
 
             # Create a recent completed one (should not be pruned)
             recent_run_id = "recent1"
-            recent_sf = td / f".grok-delegate-run-{recent_run_id}.status"
+            recent_sf = td / f".cdh-run-{recent_run_id}.status"
             recent_data = _make_delegate_status(recent_run_id, "recent-run", "task", str(td), "grok-build", "completed")
             recent_data["ended_at"] = datetime.now().isoformat()
             _write_status_file(recent_sf, recent_data)
@@ -55,7 +55,7 @@ class TestStatusFilePruning(unittest.TestCase):
             td = Path(td)
 
             # Active (waiting) status
-            active_sf = td / ".grok-delegate-run-active99.status"
+            active_sf = td / ".cdh-run-active99.status"
             active_data = _make_delegate_status("active99", None, "task", str(td), "grok-build", "waiting")
             _write_status_file(active_sf, active_data)
 
@@ -114,7 +114,7 @@ class TestDryRunPreview(unittest.TestCase):
             self.assertIn("no inner delegation will be launched", output)
 
             # No status file should have been created
-            status_files = list(Path(td).glob(".grok-delegate-run-*.status"))
+            status_files = list(Path(td).glob(".cdh-run-*.status"))
             self.assertEqual(len(status_files), 0, "Dry-run must not create any status files")
 
 

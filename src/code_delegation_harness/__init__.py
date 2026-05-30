@@ -1,5 +1,5 @@
 """
-Grok Coding Delegate
+Code Delegation Harness
 
 Professional packaging for the `gcdh` command.
 """

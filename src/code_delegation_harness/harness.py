@@ -222,7 +222,7 @@ def prune_completed_status_files(target_dir: str, max_age_days: int = 7) -> None
     now = datetime.now()
     limit = now - timedelta(days=max_age_days)
 
-    for sf in target_path.glob(".grok-delegate-run-*.status"):
+    for sf in target_path.glob(".cdh-run-*.status"):
         try:
             data = json.loads(sf.read_text())
             if data.get("state") in ("completed", "failed", "completed_no_changes", "max_wait_exceeded"):
@@ -231,7 +231,7 @@ def prune_completed_status_files(target_dir: str, max_age_days: int = 7) -> None
                     ended_dt = datetime.fromisoformat(ended_at)
                     if ended_dt < limit:
                         sf.unlink()
-                        print(f"[grok-delegate] Pruned old status file: {sf.name}")
+                        print(f"[cdh] Pruned old status file: {sf.name}")
         except Exception:
             pass
 
@@ -266,12 +266,12 @@ def _wait_for_background_completion(
             _write_status_file(status_file, status)
         except Exception:
             run_id = str(uuid.uuid4())[:8]
-            status_file = Path(cwd) / f".grok-delegate-run-{run_id}.status"
+            status_file = Path(cwd) / f".cdh-run-{run_id}.status"
             status = _make_delegate_status(run_id, run_name, task, cwd, model, state="waiting")
             _write_status_file(status_file, status)
     else:
         run_id = str(uuid.uuid4())[:8]
-        status_file = Path(cwd) / f".grok-delegate-run-{run_id}.status"
+        status_file = Path(cwd) / f".cdh-run-{run_id}.status"
         status = _make_delegate_status(run_id, run_name, task, cwd, model, state="waiting")
         _write_status_file(status_file, status)
 
@@ -298,7 +298,7 @@ def _wait_for_background_completion(
         _write_status_file(status_file, status)
 
         if not getattr(args, "quiet", False):
-            print(f"[grok-delegate] Still waiting for background run {run_id} ({run_name or ''})... ({int(elapsed)}s elapsed)")
+            print(f"[cdh] Still waiting for background run {run_id} ({run_name or ''})... ({int(elapsed)}s elapsed)")
 
         time.sleep(poll_interval)
 
@@ -323,7 +323,7 @@ def _wait_for_background_completion(
             _write_status_file(status_file, status)
 
             if not getattr(args, "quiet", False):
-                print(f"[grok-delegate] Background run {run_id} ({run_name or ''}) completed after {int(elapsed)}s total wait.")
+                print(f"[cdh] Background run {run_id} ({run_name or ''}) completed after {int(elapsed)}s total wait.")
             result["waited_for_background"] = True
             result["waited_seconds"] = int(elapsed)
             result["run_id"] = run_id
@@ -822,7 +822,7 @@ def _print_dry_run_preview(args, target_dir: str) -> None:
     quiet = getattr(args, "quiet", False)
 
     if not quiet:
-        print("[grok-delegate] DRY RUN — no inner delegation will be launched, no files will be written")
+        print("[cdh] DRY RUN — no inner delegation will be launched, no files will be written")
         print()
 
     if not quiet:
@@ -863,10 +863,10 @@ def _print_dry_run_preview(args, target_dir: str) -> None:
             print(f"Run metadata:     {parent / (stem + '.run-meta.json')}")
             print("Patch file:       <same-stem>.patch   (created only if task produces code changes)")
             print()
-            print(f"Status file:      {target_dir}/.grok-delegate-run-<8-char-id>.status")
+            print(f"Status file:      {target_dir}/.cdh-run-<8-char-id>.status")
         else:
             print("- JSON result printed to stdout")
-            print(f"- Status file (always): {target_dir}/.grok-delegate-run-<8-char-id>.status")
+            print(f"- Status file (always): {target_dir}/.cdh-run-<8-char-id>.status")
             print("- (Add --output-file to also receive .report.md, .run-meta.json, and .patch when applicable)")
         print()
         print("To execute for real, re-run the identical command WITHOUT --dry-run.")
@@ -880,7 +880,7 @@ def _print_dry_run_preview(args, target_dir: str) -> None:
             print(str(out.parent / (out.stem + ".report.md")))
             if True:  # we always expect these in the expected structure
                 print(str(out.parent / (out.stem + ".run-meta.json")))
-            print(f"{target_dir}/.grok-delegate-run-<id>.status")
+            print(f"{target_dir}/.cdh-run-<id>.status")
         else:
             print("Dry run complete (quiet). No files written.")
 
@@ -938,7 +938,7 @@ def main():
         resume_path = Path(args.resume)
         if not resume_path.exists():
             # treat as run_id
-            candidates = list(Path(".").glob(f"**/.grok-delegate-run-{args.resume}*.status"))
+            candidates = list(Path(".").glob(f"**/.cdh-run-{args.resume}*.status"))
             if not candidates:
                 candidates = list(Path(".").glob(f"**/*{args.resume}*.status"))
             if candidates:
@@ -964,7 +964,7 @@ def main():
                 final_status = data.get("final_status", state)
                 task_preview = (data.get("task") or "")[:80].replace("\n", " ")
 
-                print(f"[grok-delegate] Run {run_id} ({run_name or 'unnamed'}) already finished (state: {state}).")
+                print(f"[cdh] Run {run_id} ({run_name or 'unnamed'}) already finished (state: {state}).")
                 print(f"  Elapsed: {elapsed}s | Ended: {ended or 'n/a'} | Final exit: {final_exit} | Status: {final_status}")
                 if task_preview:
                     print(f"  Task: {task_preview}...")
@@ -972,10 +972,10 @@ def main():
                 print("Look for companion artifacts in the target directory or the original --output-file location:")
                 print("  - <output>.json + <output>.report.md + <output>.patch (if changes were made)")
                 print("  - <output>.run-meta.json")
-                print(f"  - Or run:  ls -l {original_target}/.grok-delegate-run-{run_id}*")
+                print(f"  - Or run:  ls -l {original_target}/.cdh-run-{run_id}*")
                 sys.exit(0 if final_exit in (0, None) else 1)
 
-            print(f"[grok-delegate] Resuming background run {run_id} in {original_target}...")
+            print(f"[cdh] Resuming background run {run_id} in {original_target}...")
 
             resume_status_file = resume_path if resume_path.suffix == ".status" else None
 
@@ -1003,7 +1003,7 @@ def main():
 
     if args.status:
         target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
-        status_files = sorted(Path(target_dir).glob(".grok-delegate-run-*.status"))
+        status_files = sorted(Path(target_dir).glob(".cdh-run-*.status"))
         if not status_files:
             print("No delegate background runs found in", target_dir)
             sys.exit(0)
@@ -1063,7 +1063,7 @@ def main():
 
     # Gentle warning for non-git directories (rich diffs, previews, and patch generation depend on git)
     if not os.path.isdir(os.path.join(target_dir, ".git")) and not getattr(args, "quiet", False):
-        print("[grok-delegate] Warning: Target directory is not a Git repository. "
+        print("[cdh] Warning: Target directory is not a Git repository. "
               "Rich diff reports, previews, and .patch file generation will be skipped.", file=sys.stderr)
 
     if args.dry_run:
@@ -1073,7 +1073,7 @@ def main():
     # Always create a launch status file for full observability and production reliability.
     # This makes --status useful for every delegation and enables clean resumption patterns.
     launch_run_id = str(uuid.uuid4())[:8]
-    launch_status_file = Path(target_dir) / f".grok-delegate-run-{launch_run_id}.status"
+    launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
     launch_status = _make_delegate_status(
         launch_run_id, args.run_name, args.task, target_dir, args.model, state="launched"
     )
@@ -1081,7 +1081,7 @@ def main():
     _write_status_file(launch_status_file, launch_status)
 
     if not getattr(args, "quiet", False):
-        print(f"[grok-delegate] Status: {launch_status_file.name} (launched)")
+        print(f"[cdh] Status: {launch_status_file.name} (launched)")
 
     prompt = build_grok_prompt(
         task=args.task,
@@ -1091,9 +1091,9 @@ def main():
     )
 
     if not getattr(args, "quiet", False):
-        print(f"[grok-delegate] Starting delegation at {datetime.now().isoformat()}")
-        print(f"[grok-delegate] Task: {args.task[:100]}...")
-        print(f"[grok-delegate] Working in: {target_dir}")
+        print(f"[cdh] Starting delegation at {datetime.now().isoformat()}")
+        print(f"[cdh] Task: {args.task[:100]}...")
+        print(f"[cdh] Working in: {target_dir}")
     # In quiet mode we intentionally print almost nothing here — only errors and final artifacts
 
     result = call_grok_headless(prompt, cwd=target_dir, model=args.model, timeout=args.timeout, max_turns=args.max_turns)
@@ -1102,7 +1102,7 @@ def main():
     if result.get("timed_out") and args.wait_for_completion:
         run_name = args.run_name or None
         if not getattr(args, "quiet", False):
-            print(f"[grok-delegate] Inner run timed out after {args.timeout}s. Entering wait-for-completion mode (max wait: {args.max_wait}s, poll every {args.poll_interval}s)...")
+            print(f"[cdh] Inner run timed out after {args.timeout}s. Entering wait-for-completion mode (max wait: {args.max_wait}s, poll every {args.poll_interval}s)...")
         result = _wait_for_background_completion(
             prompt=prompt,
             cwd=target_dir,
@@ -1176,15 +1176,15 @@ def main():
                 if patch_parts:
                     full_patch = "\n".join(patch_parts)
                     patch_path.write_text(full_patch + "\n")
-                    print(f"[grok-delegate] Ready-to-apply patch written to {patch_path}")
+                    print(f"[cdh] Ready-to-apply patch written to {patch_path}")
                     clean_result["patch_file"] = str(patch_path)
                     # Re-serialize so the JSON also contains the patch_file reference
                     output = json.dumps(clean_result, indent=2)
             except Exception as e:
-                print(f"[grok-delegate] Warning: Could not generate patch: {e}")
+                print(f"[cdh] Warning: Could not generate patch: {e}")
 
         out_path.write_text(output)
-        print(f"[grok-delegate] Structured results written to {out_path}")
+        print(f"[cdh] Structured results written to {out_path}")
 
         # Write a run metadata file for reproducibility (especially useful for long/background runs)
         meta = {
@@ -1209,7 +1209,7 @@ def main():
         report_path = out_path.with_suffix(".report.md")
         report = render_human_report(clean_result)
         report_path.write_text(report)
-        print(f"[grok-delegate] Human review report written to {report_path}")
+        print(f"[cdh] Human review report written to {report_path}")
 
         # Surface the complete, ready-to-use end result artifacts
         if getattr(args, "quiet", False):
@@ -1217,7 +1217,7 @@ def main():
             if clean_result.get("patch_file"):
                 print(str(clean_result['patch_file']))
         else:
-            print("\n[grok-delegate] Artifacts ready:")
+            print("\n[cdh] Artifacts ready:")
             print(f"  {out_path}")
             print(f"  {report_path}")
             if clean_result.get("patch_file"):
@@ -1225,7 +1225,7 @@ def main():
             meta_path = out_path.parent / f"{out_path.stem}.run-meta.json"
             if meta_path.exists():
                 print(f"  {meta_path}")
-            print(f"  {target_dir}/.grok-delegate-run-{clean_result.get('run_id', launch_run_id)}.status")
+            print(f"  {target_dir}/.cdh-run-{clean_result.get('run_id', launch_run_id)}.status")
 
         _finalize_delegate_status(launch_status_file, clean_result, args.run_name)
     else:

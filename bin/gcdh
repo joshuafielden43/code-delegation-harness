@@ -20,7 +20,7 @@ src_dir = repo_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from grok_delegate import main
+from code_delegation_harness import main
 
 if __name__ == "__main__":
     # Make argv[0] nicer
