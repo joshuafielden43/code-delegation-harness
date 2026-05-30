@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-delegation-harness"
-version = "0.2.0"
+version = "0.2.1"
 description = "A harness for delegating coding work to LLMs while keeping your main agent clean. Structured artifacts, long-running support, and swappable backends."
 readme = "README.md"
 license = {text = "MIT"}
