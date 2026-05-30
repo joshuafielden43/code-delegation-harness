@@ -75,14 +75,28 @@ gcdh --help
 gcdh --quiet --task "..." --target-dir /path/to/project --output-file result.json
 ```
 
-**Also available via pip:**
+**Installation**
+
+See the [Installation guide](docs/installation.md) for the recommended way to install the harness (including guidance for agents and production use).
+
+For the absolute latest development version:
 
 ```bash
 pip install -e .
 gcdh --help
 ```
 
-Both give you the full modern experience, including `--quiet` (`-q`) and `--verbose` (`-v`).
+Both the released package and the development install give you the full modern experience, including `--quiet` (`-q`) and `--verbose` (`-v`).
+
+## Documentation
+
+Full documentation lives in the `docs/` directory:
+
+- [Installation](docs/installation.md)
+- [Usage Notes](docs/usage-notes.md)
+- [Examples](docs/examples/)
+- [Dogfooding Case Study](docs/dogfooding-case-study.md)
+- [Complete Proposed Documentation Structure](docs/DOCUMENTATION-STRUCTURE.md) (what we intend to build over time)
 
 ### For Agents, Sidecars & Automation (Robot-Useful)
 

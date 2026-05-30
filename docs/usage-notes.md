@@ -1,12 +1,14 @@
-# Grok Coding Delegate - Usage Notes
+# Usage Notes
 
 ## Professional CLI Usage
 
-The recommended way to use the tool is via the `gcdh` command (see main README for the `bin/gcdh` wrapper or upcoming `pip install` instructions).
+The recommended way to use the tool is via the `gcdh` command.
+
+See [Installation](installation.md) for how to get the command.
 
 ### How It Works
 
-1. Invoke `gcdh` (or `python scripts/grok_delegate.py`) with a clear task, target directory, and optional context/constraints.
+1. Invoke `gcdh` with a clear task, target directory, and optional context/constraints.
 2. The harness builds a strong, constrained prompt and runs Grok in the target directory.
 3. On completion it produces the full set of high-quality review artifacts:
    - Structured JSON
