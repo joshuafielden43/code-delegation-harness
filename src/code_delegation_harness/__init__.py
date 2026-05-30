@@ -12,6 +12,7 @@ from .harness import (
     normalize_result,
     render_human_report,
     RetryPolicy,
+    load_checkpoint_context,
     _determine_status,
     _compute_diffs_and_stats,
     _print_dry_run_preview,
@@ -21,12 +22,12 @@ from .harness import (
     _wait_for_background_completion,
 )
 
-from .status import StatusManager
+from .status import StatusManager, register_crash_protection
 
 try:
     __version__ = _pkg_version("code-delegation-harness")
 except (PackageNotFoundError, Exception):
-    __version__ = "0.2.1"
+    __version__ = "0.3.0"
 
 __all__ = [
     "main",
@@ -34,6 +35,8 @@ __all__ = [
     "normalize_result",
     "render_human_report",
     "RetryPolicy",
+    "load_checkpoint_context",
+    "register_crash_protection",
     "__version__",
     "StatusManager",
 ]

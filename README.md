@@ -116,7 +116,7 @@ This design makes it a strong primitive for building reliable delegation into la
 Long-running tasks are well supported:
 - Use `--timeout` (seconds) and `--max-turns` to give big jobs room to breathe.
 - Add `--wait-for-completion --max-wait 14400` (for example) and the wrapper will automatically poll until a background run finishes, then deliver the complete artifacts (full .json + .report.md + .patch + .run-meta.json).
-- Persistent `.cdh-run-<id>.status` files are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded).
+- Persistent `.cdh-run-<id>.status` files (with `last_heartbeat_at`, pid, full prompt) are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded / crashed). See `--status`, `--reap-dead`, `--resume`, the operational runbook in `docs/operations/`, and `scripts/monitor_cdh_status.py` for production monitoring and recovery.
 - Use `--status --target-dir /path` at any time to see both active and completed runs in that tree.
 - Use `--resume <run-id-or-file>` to re-attach to a background run (smart short-circuit if it already finished).
 - All final human review artifacts reflect the full background/resumption story when relevant.

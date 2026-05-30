@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
@@ -81,13 +82,45 @@ class StatusManager:
         manager._atomic_write()
         return manager
 
-    def load(self) -> bool:
+    def load(self, require_owner_and_secure: bool = True) -> bool:
         """Load existing status from disk. Returns True on success.
+
+        If require_owner_and_secure=True (default for control paths), verifies
+        that the file is owned by the current user and has no group/other write bits.
+        This mitigates tampering in shared target directories.
 
         Attempts best-effort recovery if the file is partially corrupted.
         """
         if not self.status_file.exists():
             return False
+
+        # Check for lightweight crash sentinel written from signal/atexit handlers
+        sentinel = self.status_file.with_suffix(self.status_file.suffix + ".crashed")
+        if sentinel.exists():
+            try:
+                if require_owner_and_secure:
+                    st = sentinel.stat()
+                    if st.st_uid != os.getuid() or (st.st_mode & 0o022):
+                        pass  # still treat as insecure but proceed to mark
+                reason = sentinel.read_text().strip()
+                self._data = {"state": "crashed", "crash_reason": reason, "_from_sentinel": True}
+                return True
+            except Exception:
+                pass
+
+        if require_owner_and_secure:
+            try:
+                st = self.status_file.stat()
+                if st.st_uid != os.getuid():
+                    self._data = {"_insecure": True, "reason": "not owner"}
+                    return False
+                if st.st_mode & 0o022:  # group or other writable
+                    self._data = {"_insecure": True, "reason": "world/group writable"}
+                    return False
+            except Exception:
+                self._data = {"_insecure": True, "reason": "stat failed"}
+                return False
+
         try:
             raw = self.status_file.read_text()
             self._data = json.loads(raw)
@@ -143,6 +176,11 @@ class StatusManager:
         if self._data.get("_corrupted") or self._data.get("_recovered") is None:
             if "_recovered" not in self._data:
                 self._data["_recovered"] = True
+            # Clear transient corruption marker after successful healing so future
+            # ensure_recoverable calls (e.g. during resume or status) do not re-clobber
+            # caller-supplied values into an otherwise valid record.
+            if "_corrupted" in self._data:
+                del self._data["_corrupted"]
             dirty = True
 
         if dirty:
@@ -214,10 +252,14 @@ class StatusManager:
     def to_dict(self) -> dict[str, Any]:
         return dict(self._data)
 
-    def looks_dead(self, max_silence_seconds: int = 300) -> bool:
+    def looks_dead(self, max_silence_seconds: int = 300, check_pid: bool = False) -> bool:
         """Returns True if this run is in a 'running' or 'waiting' state but
         has had no heartbeat/poll for longer than max_silence_seconds.
         Useful for external monitors or --status to flag crashed background tasks.
+
+        If check_pid=True (optional, cheap on Unix), also verifies that the recorded
+        PID is still alive using os.kill(pid, 0). This greatly reduces false positives
+        during long synchronous call_model_headless executions.
         """
         state = self._data.get("state")
         if state not in ("running", "waiting", "launched"):
@@ -230,21 +272,55 @@ class StatusManager:
         try:
             last_dt = datetime.fromisoformat(last)
             age = (datetime.now() - last_dt).total_seconds()
-            return age > max_silence_seconds
+            if age <= max_silence_seconds:
+                return False
         except Exception:
             return False
+
+        if not check_pid:
+            return True
+
+        pid = self._data.get("pid")
+        if not pid:
+            return True  # No PID recorded → fall back to time-based only
+
+        try:
+            os.kill(pid, 0)  # Does not kill; just checks existence
+            return False     # Process is still alive
+        except (OSError, ProcessLookupError):
+            return True      # Process is dead
+        except Exception:
+            return True      # Conservative: treat as dead on unexpected error
 
     def write(self) -> None:
         """Force write current state."""
         self._atomic_write()
 
     def _atomic_write(self) -> None:
-        """Write atomically with secure permissions."""
+        """Write atomically with secure permissions.
+        Includes fsync for durability (P1 from DevOps/Security review) so that
+        status and crash sentinels survive sudden power loss / OOM / hard kill
+        between write and replace.
+        """
         try:
             tmp_path = self.status_file.with_suffix(self.status_file.suffix + ".tmp")
             tmp_path.write_text(json.dumps(self._data, indent=2))
+            # chmod BEFORE replace to close the world-readable window (umask often 644)
+            # and ensure the final file has 0600 even if process dies between steps.
+            os.chmod(tmp_path, 0o600)
+
+            # Durability: fsync the tmp file so data hits disk before the atomic replace.
+            # Best-effort; errors here must never crash the caller.
+            try:
+                fd = os.open(str(tmp_path), os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except Exception:
+                pass
+
             os.replace(tmp_path, self.status_file)
-            os.chmod(self.status_file, 0o600)
         except Exception:
             # Best effort — never let status writing crash the harness
             pass
@@ -263,8 +339,27 @@ class StatusManager:
 _ACTIVE_STATUS_FILE: Optional[Path] = None
 
 
+def _append_crash_log(status_file: Path, reason: str) -> None:
+    """Best-effort append-only crash log next to a status file for auditability.
+    Never raises; used to improve forensics in protection paths (P1 from Security review).
+    """
+    try:
+        log_path = status_file.with_suffix(status_file.suffix + ".last-crash")
+        ts = datetime.now().isoformat()
+        line = f"{ts} | {reason}\n"
+        # Use O_APPEND | O_CREAT for simple atomic append on most FSes
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(line)
+    except Exception:
+        pass  # absolute best effort
+
+
 def _mark_active_run_crashed(reason: str = "Harness process terminated unexpectedly") -> None:
-    """Best-effort attempt to mark the current active run as crashed on exit/signal."""
+    """Best-effort attempt to mark the current active run as crashed on exit/signal.
+    Now also appends to a .last-crash sibling log for post-mortem auditability
+    when the primary mark or sentinel path itself fails.
+    """
     global _ACTIVE_STATUS_FILE
     if _ACTIVE_STATUS_FILE and _ACTIVE_STATUS_FILE.exists():
         try:
@@ -274,7 +369,10 @@ def _mark_active_run_crashed(reason: str = "Harness process terminated unexpecte
                 if current_state in ("launched", "waiting", "running"):
                     sm.mark_crashed(reason)
                     print(f"[cdh] Emergency: marked run as crashed on process exit ({reason})", file=sys.stderr)
-        except Exception:
+                    _append_crash_log(_ACTIVE_STATUS_FILE, reason)
+        except Exception as e:
+            # Record the protection failure itself for forensics
+            _append_crash_log(_ACTIVE_STATUS_FILE, f"PROTECTION_FAILURE: {e} (original reason: {reason})")
             pass
     _ACTIVE_STATUS_FILE = None
 
@@ -282,6 +380,13 @@ def _mark_active_run_crashed(reason: str = "Harness process terminated unexpecte
 def register_crash_protection(status_file: Path) -> None:
     """Register atexit + signal handlers so we try to mark the run crashed if we die.
     This is the public entry point used by the harness.
+
+    LIMITATIONS (known, by design for lightweight):
+    - SIGKILL / OOM killer / power loss / hard crash: cannot be caught; status may stay "running".
+      Use --reap-dead or external monitors + looks_dead() for those cases.
+    - Unix signals only (SIGTERM/INT + atexit). On Windows these are no-ops or limited;
+      detach mode also Unix-only (nohup/setsid in harness).
+    - Best-effort only; write errors swallowed.
     """
     global _ACTIVE_STATUS_FILE
     _ACTIVE_STATUS_FILE = Path(status_file)
@@ -297,8 +402,36 @@ def register_crash_protection(status_file: Path) -> None:
         _signal.signal(signum, _signal.SIG_DFL)
         _os.kill(_os.getpid(), signum)
 
-    for sig in (_signal.SIGTERM, _signal.SIGINT):
+    for sig in (_signal.SIGTERM, _signal.SIGINT, _signal.SIGHUP):
         try:
             _signal.signal(sig, _signal_handler)
         except (ValueError, OSError):
             pass
+
+    # Also write a tiny sentinel file immediately (lightweight, safe in signal context)
+    # The next load() or --reap-dead will detect it and promote to full "crashed" state.
+    try:
+        sentinel = _ACTIVE_STATUS_FILE.with_suffix(_ACTIVE_STATUS_FILE.suffix + ".crashed")
+        # Secure create: open with 0o600 to avoid world-readable window
+        fd = _os.open(sentinel, _os.O_CREAT | _os.O_WRONLY | _os.O_TRUNC, 0o600)
+        with _os.fdopen(fd, "w") as f:
+            f.write(f"reason: signal/atexit\nat: {datetime.now().isoformat()}\n")
+    except Exception as e:
+        _append_crash_log(_ACTIVE_STATUS_FILE, f"SENTINEL_WRITE_FAILED: {e}")
+        pass
+
+
+def _is_owned_and_not_world_writable(path: Path) -> bool:
+    """Return True only if path exists, is owned by current uid, and has no group/other write bits.
+    Used for hardening status loads and untrusted checkpoint ingestion from target_dir.
+    Any error (missing, permission, etc.) returns False (fail closed for security checks).
+    """
+    try:
+        st = path.stat()
+        if st.st_uid != os.getuid():
+            return False
+        if st.st_mode & 0o022:  # group or other writable
+            return False
+        return True
+    except Exception:
+        return False

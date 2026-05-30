@@ -31,6 +31,16 @@ Centralized, resilient handling of `.cdh-run-*.status` files:
 
 This layer exists so that long-running and background delegations remain observable and recoverable even across process restarts or crashes.
 
+**Resilience primitives (added for crash / long-running survival):**
+- `heartbeat()`, `looks_dead()`, `mark_crashed()` on StatusManager + `register_crash_protection()` (atexit + SIGTERM/INT best-effort).
+- `--reap-dead`: bulk mark silent runs crashed using looks_dead.
+- `--detach`: Unix daemon launch (nohup+setsid) for survival of terminal/parent death.
+- `--resume` on "crashed" state: auto-injects `load_checkpoint_context()` (PROGRESS.json etc) + recovery instructions into prompt; sets `resumed_from_crash` for reports.
+- Baked prompt mandates frequent PROGRESS.json checkpoints + upfront planning/self-review for complex tasks (survive harness or inner death).
+- `RetryPolicy` + self-heal `ensure_recoverable()` + throttled writes for robustness.
+
+Limitations acknowledged in code: SIGKILL unrecoverable by handlers; no HB during inner model call (long tasks >5min may false-positive as dead to observers); primarily Unix for signals/detach. Use --reap + checkpoints for full coverage.
+
 ### 4. Output Artifacts
 
 When a delegation completes, the harness produces:

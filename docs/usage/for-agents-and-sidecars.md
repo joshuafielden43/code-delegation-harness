@@ -32,14 +32,17 @@ Then read the output JSON (and companion `.report.md` / `.patch` if they exist).
 - `--wait-for-completion` + `--max-wait`
 - `--status` and `--resume` (for observability and recovery)
 - `--run-name` (for human-friendly identification in status files)
+- `--reap-dead` (for post-reboot / post-crash cleanup by orchestrators)
+- The operational monitor script + runbook in `docs/operations/` for agent-driven healthchecks and alerting on dead runs via heartbeats/status files
 
 ## Status Files as a Coordination Mechanism
 
-When using `--wait-for-completion` or `--run-name`, the harness writes persistent `.cdh-run-*.status` files. These can be used by orchestrating agents to:
+When using `--wait-for-completion` or `--run-name`, the harness writes persistent `.cdh-run-*.status` files (with `last_heartbeat_at`, `pid`, state machine). These can be used by orchestrating agents to:
 
 - Detect in-progress delegations
-- Resume waiting after restarts
+- Resume waiting after restarts (or after using `--reap-dead` post-crash)
 - Surface work to humans via `--status`
+- Drive external monitoring/alerting (see `scripts/monitor_cdh_status.py` and the operational runbook)
 
 ## Anti-Patterns to Avoid
 
