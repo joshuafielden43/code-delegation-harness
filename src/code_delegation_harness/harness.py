@@ -262,6 +262,7 @@ def _wait_for_background_completion(
     run_name: Optional[str] = None,
     task: Optional[str] = None,
     existing_status_file: Optional[Path] = None,
+    quiet: bool = False,
 ) -> dict:
     """
     After a timeout, keep polling until the background run completes or max_wait is exceeded.
@@ -271,34 +272,30 @@ def _wait_for_background_completion(
     """
     start_time = time.time()
 
+    # Use StatusManager for robust status handling
     if existing_status_file and existing_status_file.exists():
-        try:
-            existing = json.loads(existing_status_file.read_text())
-            run_id = existing.get("run_id") or str(uuid.uuid4())[:8]
-            status_file = existing_status_file
-            status = existing
-            status["state"] = "waiting"
-            status["last_poll_at"] = datetime.now().isoformat()
-            _write_status_file(status_file, status)
-        except Exception:
+        status_manager = StatusManager(existing_status_file)
+        if not status_manager.load():
             run_id = str(uuid.uuid4())[:8]
-            status_file = Path(cwd) / f".cdh-run-{run_id}.status"
-            status = _make_delegate_status(run_id, run_name, task, cwd, model, state="waiting")
-            _write_status_file(status_file, status)
+            status_manager = StatusManager.create_new(
+                run_id, run_name, task, cwd, model, state="waiting"
+            )
     else:
         run_id = str(uuid.uuid4())[:8]
-        status_file = Path(cwd) / f".cdh-run-{run_id}.status"
-        status = _make_delegate_status(run_id, run_name, task, cwd, model, state="waiting")
-        _write_status_file(status_file, status)
+        status_manager = StatusManager.create_new(
+            run_id, run_name, task, cwd, model, state="waiting"
+        )
+
+    status_file = status_manager.status_file
+    status = status_manager.to_dict()
+    run_id = status.get("run_id") or str(uuid.uuid4())[:8]
+
+    status_manager.set_state("waiting")
 
     while True:
         elapsed = time.time() - start_time
         if elapsed > max_wait:
-            status["state"] = "max_wait_exceeded"
-            status["elapsed_seconds"] = int(elapsed)
-            status["last_poll_at"] = datetime.now().isoformat()
-            status["ended_at"] = datetime.now().isoformat()
-            _write_status_file(status_file, status)
+            status_manager.mark_max_wait_exceeded(elapsed)
             return {
                 "error": f"Waited {int(elapsed)}s for background completion but exceeded --max-wait of {max_wait}s.",
                 "exit_code": -1,
@@ -308,15 +305,8 @@ def _wait_for_background_completion(
                 "run_name": run_name,
             }
 
-        # Update and persist live status (visible to --status while waiting).
-        # Lightweight: only write on significant changes or every ~30s to reduce I/O during very long waits.
-        status["elapsed_seconds"] = int(elapsed)
-        status["last_poll_at"] = datetime.now().isoformat()
-
-        last_write = status.get("_last_status_write", 0)
-        if (elapsed - last_write > 30) or (status.get("state") != "waiting"):
-            _write_status_file(status_file, status)
-            status["_last_status_write"] = elapsed
+        # Record poll (lightweight — manager handles throttling internally if desired)
+        status_manager.record_poll(elapsed)
 
         if not quiet:
             print(f"[cdh] Still waiting for background run {run_id} ({run_name or ''})... ({int(elapsed)}s elapsed)")
@@ -340,15 +330,9 @@ def _wait_for_background_completion(
             continue
 
         if not result.get("timed_out"):
-            # Mark completed and leave the status file behind for history / --status
+            # Mark completed using the manager
             exit_code = result.get("exit_code", 0)
-            status["state"] = "completed"
-            status["elapsed_seconds"] = int(elapsed)
-            status["last_poll_at"] = datetime.now().isoformat()
-            status["ended_at"] = datetime.now().isoformat()
-            status["final_exit_code"] = exit_code
-            status["final_status"] = "success" if exit_code in (0, None) else "failure_or_partial"
-            _write_status_file(status_file, status)
+            status_manager.mark_completed(exit_code)
 
             if not quiet:
                 print(f"[cdh] Background run {run_id} ({run_name or ''}) completed after {int(elapsed)}s total wait.")
@@ -1036,6 +1020,7 @@ def main():
                 run_name=run_name,
                 task=data.get("task") or original_prompt,
                 existing_status_file=resume_status_file,
+                quiet=quiet,
             )
 
             # Proceed with normal result processing below
@@ -1172,6 +1157,7 @@ def main():
             run_name=run_name,
             task=args.task,
             existing_status_file=launch_status_file,
+            quiet=quiet,
         )
 
     # Add metadata
