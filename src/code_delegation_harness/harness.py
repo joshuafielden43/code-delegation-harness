@@ -196,38 +196,41 @@ def _write_status_file(status_file: Path, data: dict) -> None:
 
 
 def _finalize_delegate_status(status_file: Optional[Path], clean_result: dict, run_name: Optional[str] = None) -> None:
-    """Update (or create) a status file with final completion state after a run ends."""
+    """Update (or create) a status file with final completion state after a run ends.
+
+    Now uses StatusManager for consistent, resilient finalization.
+    """
     if not status_file:
         return
-    try:
-        existing = {}
-        if status_file.exists():
-            existing = json.loads(status_file.read_text())
-        final_state = "completed" if clean_result.get("success") else "failed"
-        if clean_result.get("status") == "no_changes":
-            final_state = "completed_no_changes"
-        elapsed = None
-        if "started_at" in existing:
-            try:
-                started = datetime.fromisoformat(existing["started_at"])
-                elapsed = int((datetime.now() - started).total_seconds())
-            except Exception:
-                pass
 
-        final = {
-            **existing,
-            "state": final_state,
-            "final_status": clean_result.get("status"),
-            "ended_at": datetime.now().isoformat(),
-            "elapsed_seconds": elapsed or existing.get("elapsed_seconds"),
-            "run_name": run_name or existing.get("run_name"),
-            "summary": clean_result.get("summary", "")[:200],
-        }
-        if clean_result.get("run_id"):
-            final["run_id"] = clean_result["run_id"]
-        _write_status_file(status_file, final)
-    except Exception:
-        pass
+    status_manager = StatusManager(status_file)
+    status_manager.load()  # Best effort load of existing data
+
+    final_state = "completed" if clean_result.get("success") else "failed"
+    if clean_result.get("status") == "no_changes":
+        final_state = "completed_no_changes"
+
+    elapsed = None
+    if "started_at" in status_manager.to_dict():
+        try:
+            started = datetime.fromisoformat(status_manager.get("started_at"))
+            elapsed = int((datetime.now() - started).total_seconds())
+        except Exception:
+            pass
+
+    # Update via manager
+    status_manager.set_state(final_state)
+    updates = {
+        "final_status": clean_result.get("status"),
+        "ended_at": datetime.now().isoformat(),
+        "elapsed_seconds": elapsed or status_manager.get("elapsed_seconds"),
+        "run_name": run_name or status_manager.get("run_name"),
+        "summary": clean_result.get("summary", "")[:200],
+    }
+    if clean_result.get("run_id"):
+        updates["run_id"] = clean_result["run_id"]
+
+    status_manager.update(**updates)
 
 
 def prune_completed_status_files(target_dir: str, max_age_days: int = 7) -> None:
