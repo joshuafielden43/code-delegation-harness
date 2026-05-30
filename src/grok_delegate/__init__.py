@@ -21,7 +21,7 @@ from .harness import (
 )
 
 try:
-    __version__ = _pkg_version("grok-coding-delegate")
+    __version__ = _pkg_version("code-delegation-harness")
 except (PackageNotFoundError, Exception):
     __version__ = "0.2.0"
 

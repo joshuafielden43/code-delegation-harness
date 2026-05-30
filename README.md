@@ -99,7 +99,7 @@ Long-running tasks are well supported:
 - Use `--resume <run-id-or-file>` to re-attach to a background run (smart short-circuit if it already finished).
 - All final human review artifacts reflect the full background/resumption story when relevant.
 
-See `references/example-usage-for-honey.md` for a complete, ready-to-run concrete test case using a disposable target file.
+See the `tests/` directory and `references/` (in the full development tree) for usage examples.
 
 ### Dry-Run Preview Mode
 
@@ -141,16 +141,13 @@ The project maintains two aligned purposes:
 - A practical, MIT-licensed tool for reliable coding delegation
 - The primary dogfooding platform for designing clean delegation patterns for future sidecar architectures
 
-All active development happens in the recovery layer. The code in this repository is the current production version.
+The code in this repository is the current production version.
 
 ## Development & Contributing
 
-All active work lives in the recovery layer:
-`~/.grok/worktrees/jcf/scratch/skills/software-development/grok-coding-delegate/`
+Core implementation lives in `src/grok_delegate/harness.py` (with shims in `bin/gcdh` and `scripts/grok_delegate.py`; also `python -m grok_delegate` after install or with PYTHONPATH=src).
 
-Core implementation: `src/grok_delegate/harness.py` (with shims in `bin/gcdh` and `scripts/grok_delegate.py`; also `python -m grok_delegate` after install or PYTHONPATH=src)
-
-See `CHANGELOG.md`, `references/usage-notes.md`, and `references/dogfooding-case-study.md` for history and deeper details.
+See `CHANGELOG.md` for release history. Full development notes live in the upstream development tree.
 
 ## License
 

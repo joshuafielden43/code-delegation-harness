@@ -1,12 +1,12 @@
 # Contributing
 
-Thank you for your interest in contributing to the Grok Coding Delegate!
+Thank you for your interest in contributing to the Code Delegation Harness!
 
 ## Development Setup
 
 ```bash
-git clone https://github.com/<org>/grok-coding-delegate.git
-cd grok-coding-delegate
+git clone https://github.com/<org>/code-delegation-harness.git
+cd code-delegation-harness
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
