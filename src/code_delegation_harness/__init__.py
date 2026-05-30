@@ -20,10 +20,12 @@ from .harness import (
     _wait_for_background_completion,
 )
 
+from .status import StatusManager
+
 try:
     __version__ = _pkg_version("code-delegation-harness")
 except (PackageNotFoundError, Exception):
-    __version__ = "0.2.0"
+    __version__ = "0.2.1"
 
 __all__ = [
     "main",
@@ -31,4 +33,5 @@ __all__ = [
     "normalize_result",
     "render_human_report",
     "__version__",
+    "StatusManager",
 ]
