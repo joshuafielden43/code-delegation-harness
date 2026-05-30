@@ -12,17 +12,11 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from code_delegation_harness import prune_completed_status_files, _make_delegate_status, _write_status_file
 
-# Internal functions for testing - import directly from the implementation module
-import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "grok_delegate_impl",
-    Path(__file__).parent.parent / "src" / "code_delegation_harness" / "harness.py"
-)
-grok_delegate_impl = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(grok_delegate_impl)
-_print_dry_run_preview = grok_delegate_impl._print_dry_run_preview
+# After `pip install -e .` in CI (or locally), the package is properly importable.
+# Use clean imports from the installed package (no more fragile direct .py loading hacks).
+from code_delegation_harness import prune_completed_status_files, _make_delegate_status, _write_status_file
+from code_delegation_harness.harness import _print_dry_run_preview
 
 
 class TestStatusFilePruning(unittest.TestCase):
@@ -103,8 +97,6 @@ class TestDryRunPreview(unittest.TestCase):
             sys.stdout = StringIO()
 
             try:
-                # Use the implementation loaded via the importlib hack at module level
-                # (handles the post-rename module structure cleanly)
                 _print_dry_run_preview(args, td)
                 output = sys.stdout.getvalue()
             finally:
