@@ -3,16 +3,16 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "grok-coding-delegate"
+name = "code-delegation-harness"
 version = "0.2.0"
-description = "A focused, production-oriented harness for delegating coding work to Grok with excellent review artifacts and strong long-running support."
+description = "A universal, production-grade harness for delegating coding work to LLMs. Excellent structured output, long-running support, and review artifacts. First-class experience with Grok."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-  {name = "Grok Coding Delegate Project"}
+  {name = "Code Delegation Harness Project"}
 ]
-keywords = ["grok", "coding", "delegation", "ai", "automation"]
+keywords = ["ai", "llm", "coding", "delegation", "automation", "grok", "agent", "sidecar"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -32,8 +32,8 @@ classifiers = [
 gcdh = "grok_delegate.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/joshuafielden43/grok-code-delegation-harness"
-Repository = "https://github.com/joshuafielden43/grok-code-delegation-harness"
+Homepage = "https://github.com/joshuafielden43/code-delegation-harness"
+Repository = "https://github.com/joshuafielden43/code-delegation-harness"
 
 [tool.setuptools.packages.find]
 where = ["src"]

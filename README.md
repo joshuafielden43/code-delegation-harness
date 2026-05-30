@@ -1,11 +1,15 @@
-# grok-coding-delegate
+# code-delegation-harness
 
-**A professional, production-ready harness for delegating coding work to Grok.**
+**A universal, production-grade harness for delegating coding work to LLMs.**
+
+It produces clean, structured, highly reviewable artifacts (`result.json` + human `.report.md` + ready-to-apply `.patch`) even for long-running or background tasks — while keeping your primary agent, persona, or workflow clean and focused.
+
+Excellent first-class experience with Grok. Works as a reliable adapter for other models too.
 
 After cloning:
 
 ```bash
-cd grok-coding-delegate
+cd code-delegation-harness
 chmod +x bin/gcdh
 export PATH="$PWD/bin:$PATH"
 
@@ -13,9 +17,7 @@ gcdh --help
 gcdh --quiet --task "..." --target-dir /path/to/project --output-file result.json
 ```
 
-It gives you clean, high-quality, reviewable artifacts (`result.json` + `result.report.md` + `result.patch`) even for long-running or background tasks — while keeping your primary agent/persona clean.
-
-The tool is designed to be both excellent for humans and easy for other agents/sidecars to drive programmatically.
+The harness is designed to be excellent for both humans and other agents/sidecars.
 
 ## Why It Exists
 
@@ -37,12 +39,10 @@ The design goal is that you spend your time reviewing actual delivered work and 
 
 ## Basic Usage
 
-From within a Hermes session:
+From within a Grok / agent session:
 
 ```
-Load the grok-coding-delegate skill.
-
-Delegate this task to Grok:
+Delegate this task using the code-delegation-harness:
 
 Task: Add Google-style docstrings and type hints to the `process_batch` function in src/batch.py. Do not change behavior.
 
@@ -58,7 +58,7 @@ For the best experience, have the underlying wrapper called with `--output-file`
 **Recommended today (immediate & reliable):**
 
 ```bash
-cd grok-coding-delegate
+cd code-delegation-harness
 chmod +x bin/gcdh
 export PATH="$PWD/bin:$PATH"
 
