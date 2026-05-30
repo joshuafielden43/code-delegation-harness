@@ -80,14 +80,28 @@ class StatusManager:
         return manager
 
     def load(self) -> bool:
-        """Load existing status from disk. Returns True on success."""
+        """Load existing status from disk. Returns True on success.
+
+        Attempts best-effort recovery if the file is partially corrupted.
+        """
+        if not self.status_file.exists():
+            return False
         try:
-            if self.status_file.exists():
-                self._data = json.loads(self.status_file.read_text())
-                return True
+            raw = self.status_file.read_text()
+            self._data = json.loads(raw)
+            return True
+        except json.JSONDecodeError:
+            # Try to recover whatever we can (very defensive for long-running recovery)
+            try:
+                # Very naive recovery: try to parse as much as possible
+                # For now we just keep an empty dict with a corruption marker
+                self._data = {"_corrupted": True, "raw": raw[:2000]}
+            except Exception:
+                self._data = {"_corrupted": True}
+            return False
         except Exception:
-            pass
-        return False
+            self._data = {"_corrupted": True}
+            return False
 
     def update(self, **kwargs: Any) -> None:
         """Update fields and persist."""

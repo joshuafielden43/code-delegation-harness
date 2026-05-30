@@ -317,20 +317,27 @@ def _wait_for_background_completion(
         time.sleep(poll_interval)
 
         # Retry the call — if the background task finished, this should now return the final result.
-        # Be resilient to transient errors during polling.
-        try:
-            result = call_model_headless(
-                prompt=prompt,
-                cwd=cwd,
-                model=model,
-                timeout=300,
-                max_turns=max_turns,
-            )
-        except Exception as poll_err:
-            # Log to status but keep waiting — don't kill the recovery loop on one bad poll
-            status["last_poll_error"] = str(poll_err)[:500]
-            _write_status_file(status_file, status)
-            continue
+        # Be resilient to transient errors during polling (lightweight auto-retry on certain failures).
+        result = None
+        for attempt in range(3):  # limited retries for transient issues
+            try:
+                result = call_model_headless(
+                    prompt=prompt,
+                    cwd=cwd,
+                    model=model,
+                    timeout=300,
+                    max_turns=max_turns,
+                )
+                break
+            except Exception as poll_err:
+                if attempt == 2:
+                    status_manager.update(last_poll_error=str(poll_err)[:500])
+                    result = {"error": str(poll_err), "exit_code": -1}
+                else:
+                    time.sleep(2 ** attempt)  # simple backoff
+
+        if result is None:
+            result = {"error": "Unknown polling failure", "exit_code": -1}
 
         if not result.get("timed_out"):
             # Mark completed using the manager
