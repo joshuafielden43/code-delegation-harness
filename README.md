@@ -1,5 +1,8 @@
 # code-delegation-harness
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+
 **A universal, production-grade harness for delegating coding work to LLMs.**
 
 It exists to let you hand off real implementation work without slowly contaminating your own voice, memory, or operating style. You get back clean, structured, highly reviewable artifacts (`result.json` + human `.report.md` + ready-to-apply `.patch`) — even on long-running or background tasks — while your primary agent or persona stays untouched.
