@@ -6,15 +6,14 @@ It gives you structured output + reviewable artifacts (JSON + human report + pat
 
 ## Quick Start
 
-```bash
-# Clone and install
-git clone https://github.com/joshuafielden43/code-delegation-harness.git
-cd code-delegation-harness
-pip install -e .
+For normal use:
 
-# Try it
+```bash
+pip install git+https://github.com/joshuafielden43/code-delegation-harness.git@v0.2.1
 gcdh --help
 ```
+
+For development or the absolute latest code, see the [full installation guide](docs/installation.md).
 
 Works best with Grok right now, but designed to be usable with other models too.
 
@@ -79,16 +78,7 @@ gcdh --quiet --task "..." --target-dir /path/to/project --output-file result.jso
 
 **Installation**
 
-See the [Installation guide](docs/installation.md) for the recommended way to install the harness (including guidance for agents and production use).
-
-For the absolute latest development version:
-
-```bash
-pip install -e .
-gcdh --help
-```
-
-Both the released package and the development install give you the full modern experience, including `--quiet` (`-q`) and `--verbose` (`-v`).
+See the [full Installation guide](docs/installation.md) for the recommended path for primary agents versus development use.
 
 ## Documentation
 
