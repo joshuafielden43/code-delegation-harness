@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
+from .status import StatusManager
+
 
 def build_grok_prompt(task: str, target_dir: str, context: Optional[str] = None, constraints: Optional[str] = None) -> str:
     """Construct a strong, code-first prompt for Grok with structured final output."""
@@ -1130,18 +1132,19 @@ def main():
     # Store the full prompt (plus context) so --resume can faithfully continue the original work.
     launch_run_id = str(uuid.uuid4())[:8]
     launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
-    launch_status = _make_delegate_status(
-        launch_run_id, args.run_name, args.task, target_dir, args.model, state="launched",
+    status_manager = StatusManager.create_new(
+        launch_run_id,
+        args.run_name,
+        args.task,
+        target_dir,
+        args.model,
+        state="launched",
         prompt=prompt,
         context=args.context,
         constraints=args.constraints,
     )
-    # Also store the raw original inputs for maximum recoverability
-    launch_status["original_task"] = args.task
-    launch_status["original_context"] = args.context
-    launch_status["original_constraints"] = args.constraints
-    launch_status["status_file_path"] = str(launch_status_file)
-    _write_status_file(launch_status_file, launch_status)
+    launch_status_file = status_manager.status_file
+    launch_status = status_manager.to_dict()
 
     if not getattr(args, "quiet", False):
         print(f"[cdh] Status: {launch_status_file.name} (launched)")
