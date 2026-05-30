@@ -154,20 +154,34 @@ def call_grok_headless(prompt: str, cwd: str, model: str = "grok-build", timeout
 
 
 def _make_delegate_status(run_id: str, run_name: Optional[str], task: Optional[str],
-                            target_dir: str, model: str, state: str = "waiting") -> dict:
-    """Create a rich, queryable status record for background / long-running delegate runs."""
+                            target_dir: str, model: str, state: str = "waiting",
+                            prompt: Optional[str] = None,
+                            context: Optional[str] = None,
+                            constraints: Optional[str] = None) -> dict:
+    """Create a rich, queryable status record for background / long-running delegate runs.
+
+    Stores enough information (including the full prompt when available) to allow
+    faithful recovery and resumption even after process restarts or code changes.
+    """
     task_snippet = ((task or "")[:140].replace("\n", " ").strip() + "...") if task else ""
-    return {
+    status = {
         "run_id": run_id,
         "run_name": run_name,
         "task": task_snippet,
         "target_dir": target_dir,
         "model": model,
-        "state": state,                 # waiting | completed | max_wait_exceeded
+        "state": state,
         "started_at": datetime.now().isoformat(),
         "elapsed_seconds": 0,
         "last_poll_at": None,
     }
+    if prompt:
+        status["prompt"] = prompt
+    if context:
+        status["context"] = context
+    if constraints:
+        status["constraints"] = constraints
+    return status
 
 
 def _write_status_file(status_file: Path, data: dict) -> None:
@@ -292,24 +306,36 @@ def _wait_for_background_completion(
                 "run_name": run_name,
             }
 
-        # Update and persist live status (visible to --status while waiting)
+        # Update and persist live status (visible to --status while waiting).
+        # Lightweight: only write on significant changes or every ~30s to reduce I/O during very long waits.
         status["elapsed_seconds"] = int(elapsed)
         status["last_poll_at"] = datetime.now().isoformat()
-        _write_status_file(status_file, status)
 
-        if not getattr(args, "quiet", False):
+        last_write = status.get("_last_status_write", 0)
+        if (elapsed - last_write > 30) or (status.get("state") != "waiting"):
+            _write_status_file(status_file, status)
+            status["_last_status_write"] = elapsed
+
+        if not quiet:
             print(f"[cdh] Still waiting for background run {run_id} ({run_name or ''})... ({int(elapsed)}s elapsed)")
 
         time.sleep(poll_interval)
 
-        # Retry the call — if the background task finished, this should now return the final result
-        result = call_grok_headless(
-            prompt=prompt,
-            cwd=cwd,
-            model=model,
-            timeout=300,
-            max_turns=max_turns,
-        )
+        # Retry the call — if the background task finished, this should now return the final result.
+        # Be resilient to transient errors during polling.
+        try:
+            result = call_model_headless(
+                prompt=prompt,
+                cwd=cwd,
+                model=model,
+                timeout=300,
+                max_turns=max_turns,
+            )
+        except Exception as poll_err:
+            # Log to status but keep waiting — don't kill the recovery loop on one bad poll
+            status["last_poll_error"] = str(poll_err)[:500]
+            _write_status_file(status_file, status)
+            continue
 
         if not result.get("timed_out"):
             # Mark completed and leave the status file behind for history / --status
@@ -322,7 +348,7 @@ def _wait_for_background_completion(
             status["final_status"] = "success" if exit_code in (0, None) else "failure_or_partial"
             _write_status_file(status_file, status)
 
-            if not getattr(args, "quiet", False):
+            if not quiet:
                 print(f"[cdh] Background run {run_id} ({run_name or ''}) completed after {int(elapsed)}s total wait.")
             result["waited_for_background"] = True
             result["waited_seconds"] = int(elapsed)
@@ -1092,25 +1118,33 @@ def main():
         _print_dry_run_preview(args, target_dir)
         sys.exit(0)
 
-    # Always create a launch status file for full observability and production reliability.
-    # This makes --status useful for every delegation and enables clean resumption patterns.
-    launch_run_id = str(uuid.uuid4())[:8]
-    launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
-    launch_status = _make_delegate_status(
-        launch_run_id, args.run_name, args.task, target_dir, args.model, state="launched"
-    )
-    launch_status["status_file_path"] = str(launch_status_file)
-    _write_status_file(launch_status_file, launch_status)
-
-    if not getattr(args, "quiet", False):
-        print(f"[cdh] Status: {launch_status_file.name} (launched)")
-
+    # Build the full prompt early so we can store it for high-fidelity recovery/resume
     prompt = build_grok_prompt(
         task=args.task,
         target_dir=target_dir,
         context=args.context,
         constraints=args.constraints,
     )
+
+    # Always create a launch status file for full observability and production reliability.
+    # Store the full prompt (plus context) so --resume can faithfully continue the original work.
+    launch_run_id = str(uuid.uuid4())[:8]
+    launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
+    launch_status = _make_delegate_status(
+        launch_run_id, args.run_name, args.task, target_dir, args.model, state="launched",
+        prompt=prompt,
+        context=args.context,
+        constraints=args.constraints,
+    )
+    # Also store the raw original inputs for maximum recoverability
+    launch_status["original_task"] = args.task
+    launch_status["original_context"] = args.context
+    launch_status["original_constraints"] = args.constraints
+    launch_status["status_file_path"] = str(launch_status_file)
+    _write_status_file(launch_status_file, launch_status)
+
+    if not getattr(args, "quiet", False):
+        print(f"[cdh] Status: {launch_status_file.name} (launched)")
 
     if not getattr(args, "quiet", False):
         print(f"[cdh] Starting delegation at {datetime.now().isoformat()}")
