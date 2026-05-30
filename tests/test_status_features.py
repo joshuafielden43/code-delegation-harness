@@ -103,7 +103,8 @@ class TestDryRunPreview(unittest.TestCase):
             sys.stdout = StringIO()
 
             try:
-                from grok_delegate import _print_dry_run_preview
+                # Use the implementation loaded via the importlib hack at module level
+                # (handles the post-rename module structure cleanly)
                 _print_dry_run_preview(args, td)
                 output = sys.stdout.getvalue()
             finally:

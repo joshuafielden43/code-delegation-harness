@@ -118,3 +118,6 @@ docs/
 - Existing docs (usage-notes.md, dogfooding-case-study.md, examples) are useful but should be restructured into the above layout over time.
 
 This list is intended to be the complete target state so we stop having the "I thought docs were done" conversation.
+
+**Update (after first public PyPI release):**
+- `docs/development/release-process.md` has been created with a full, honest account of shipping v0.2.0 and v0.2.1, including all the real-world issues encountered (environment mix-ups, token handling, TestPyPI recommendation, Honey's feedback on git installs, PR testing, etc.).

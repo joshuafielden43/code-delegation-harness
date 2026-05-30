@@ -889,10 +889,10 @@ def main():
     # Resolve version dynamically from package metadata (set by pyproject.toml).
     # Works for pip installs, editable installs, and direct dev execution via shims.
     try:
-        import grok_delegate as _pkg
-        _VERSION = getattr(_pkg, "__version__", "0.2.0")
+        import importlib.metadata
+        _VERSION = importlib.metadata.version("code-delegation-harness")
     except Exception:
-        _VERSION = "0.2.0"
+        _VERSION = "0.2.1"
 
     parser = argparse.ArgumentParser(description="Delegate coding work to Grok")
     parser.add_argument("--task", required=True, help="The coding task to perform")

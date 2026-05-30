@@ -85,10 +85,17 @@ See the [full Installation guide](docs/installation.md) for the recommended path
 Full documentation lives in the `docs/` directory:
 
 - [Installation](docs/installation.md)
+- [Quickstart](docs/quickstart.md)
 - [Usage Notes](docs/usage-notes.md)
+- [For Agents and Sidecars](docs/usage/for-agents-and-sidecars.md)
+- [Output Artifacts](docs/usage/output-artifacts.md)
+- [CLI Reference](docs/usage/cli-reference.md)
 - [Examples](docs/examples/)
 - [Dogfooding Case Study](docs/dogfooding-case-study.md)
-- [Complete Proposed Documentation Structure](docs/DOCUMENTATION-STRUCTURE.md) (what we intend to build over time)
+
+For people working on the harness itself, see the `development/` section, including the [Release Process](docs/development/release-process.md) which documents how we actually shipped the first public versions (including the real-world gotchas).
+
+The [Complete Proposed Documentation Structure](docs/DOCUMENTATION-STRUCTURE.md) shows the full set of docs we plan to build over time.
 
 ### For Agents, Sidecars & Automation (Robot-Useful)
 
