@@ -43,6 +43,18 @@ When creating a new prompt:
 4. Add an entry to this README.
 5. Commit both the prompt and the README update.
 
+## Follow-up Micro-Passes (New Pattern)
+
+When a run surfaces a small open thread (e.g. a single naming conflict), we now use dedicated micro-passes + apply companions instead of bloating the next big slice.
+
+The harness now injects additional context (via `--context` or task text) with clearer labeling for previous run artifacts. When writing follow-up prompts:
+
+- Be extremely explicit about exact file paths from prior runs.
+- Tell the agent "read these specific files first — do not broad search".
+- The base harness prompt now includes guidance against wasting turns on filesystem hunting when prior run paths are provided.
+
+This pattern (micro discovery → apply) has proven very high-signal for controlled normalization work.
+
 ## Related
 
 - Main harness: `src/code_delegation_harness/`

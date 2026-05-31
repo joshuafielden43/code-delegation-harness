@@ -18,6 +18,23 @@ Hard constraints (non-negotiable)
 - If a target file does not exist or does not match, record under `FILES_DEFERRED` with clear reason. No synthesis.
 - Synthetic or illustrative output only under `examples/` or `synthetic/`.
 
+**CRITICAL PRIOR ARTIFACTS FROM V5 RUN (READ THESE FIRST — DO NOT SEARCH THE FILESYSTEM FOR THEM)**
+
+The complete artifacts from the v5 controlled widening run are located in one place only:
+
+`/tmp/tag-v2-scanner-v5/`
+
+You **MUST** read the following files first, in this order, before doing any other discovery:
+
+1. `/tmp/tag-v2-scanner-v5/report.md`
+2. `/tmp/tag-v2-scanner-v5/decisions-v5.md`
+3. `/tmp/tag-v2-scanner-v5/cluster-analysis.md`
+4. `/tmp/tag-v2-scanner-v5/PROGRESS.json`
+
+These files contain the exact open thread about the nuc casing conflict that you are being asked to resolve.
+
+**STRICT RULE:** Do not use `find`, recursive `grep`, or broad filesystem searches looking for "v5", "tag-v2-scanner", or "nuc". The only prior context you are allowed to use is in the four files listed above. Any other files are out of scope for this micro-pass.
+
 Required deliverables
 - `report.md` (concise, high-signal)
   - Analysis of current "nuc"/"NUC" usages
@@ -86,7 +103,7 @@ VERIFICATION:
 Use latest PROGRESS.json for the summary block.
 
 Execution start order
-1. Review prior v5 artifacts and decisions (especially the nuc open thread)
+1. Read the four v5 artifact files listed above (in the order given).
 2. Write initial PROGRESS.json
 3. Discover all current "nuc" / "NUC" usages via live vault snapshot (read-only)
 4. Analyze casing/slug patterns and local conventions
@@ -98,4 +115,4 @@ Execution start order
 
 Deliver clean, review-ready, high-signal artifacts only. This is a tiny, high-integrity one-off to close the open thread from v5.
 
-Start by examining the v5 run artifacts and decisions in the context provided, then locate the actual vault structure for nuc-related tags. Do not assume locations.
+Start by reading the four v5 artifact files in `/tmp/tag-v2-scanner-v5/`. Do not perform any other filesystem searches for prior context.
