@@ -1,51 +1,55 @@
 #!/bin/bash
-# gcdh-tmux — one-command launcher for serious long-running work that must survive
-# hostile short-timeout environments (Grok Build TUI, CI wrappers, 300s SIG15 kills, etc.).
-#
-# Usage:
-#   ./scripts/gcdh-tmux --long-running --wait-for-completion --max-wait 86400 \
-#       --output-file /tmp/my-run.json --run-name "important-work" \
-#       --task "..." --target-dir /tmp/work
-#
-# It will:
-#   - Create a uniquely named tmux session
-#   - Run the full gcdh command inside it with GCDH_IN_TMUX=1
-#   - Print the attach command
-#   - Exit the current shell so the outer wrapper (if any) cannot kill the job
-#
-# The session name is printed and can be attached later or monitored via gcdh --status.
+# gcdh-tmux — robust one-command launcher for serious long-running work
 
 set -euo pipefail
 
 if ! command -v tmux >/dev/null 2>&1; then
-    echo "[gcdh-tmux] ERROR: tmux is not installed. Install it or use the manual tmux recipe from 'gcdh --long-running'."
+    echo "[gcdh-tmux] ERROR: tmux is not installed."
     exit 1
 fi
 
 SESSION="cdh-$(date +%s)-$$"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
-# Reconstruct the command using Python's shlex for safe quoting
-# (handles spaces, quotes, $, etc. in --task and other arguments correctly)
-CMD=$(python3 -c "
-import shlex, sys, os
-args = sys.argv[1:]
-print('cd ' + shlex.quote(os.getcwd()) + ' && GCDH_IN_TMUX=1 gcdh ' + ' '.join(shlex.quote(a) for a in args))
-" "$@")
+# Build argument list, ensuring --long-running is present
+args=("$@")
+if [[ ! " ${args[*]} " =~ " --long-running " && ! " ${args[*]} " =~ " --keep-driving " ]]; then
+    args=("--long-running" "${args[@]}")
+fi
+
+# Create a temporary script for the actual command.
+# This is much more reliable for very long prompts than trying to pass
+# a giant quoted string through tmux + shell.
+TMP_SCRIPT=$(mktemp /tmp/gcdh-tmux-XXXXXX.sh)
+chmod +x "$TMP_SCRIPT"
+
+cat > "$TMP_SCRIPT" << EOF
+#!/bin/bash
+set -euo pipefail
+cd "$REPO_ROOT"
+export GCDH_IN_TMUX=1
+
+# Prefer local venv if it exists
+if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    exec "$REPO_ROOT/.venv/bin/python" -m code_delegation_harness ${args[@]@Q}
+else
+    exec gcdh ${args[@]@Q}
+fi
+EOF
 
 echo "[gcdh-tmux] Launching in detached tmux session: $SESSION"
-tmux new-session -d -s "$SESSION" "$CMD"
+tmux new-session -d -s "$SESSION" "$TMP_SCRIPT"
 
 echo
-echo "[gcdh-tmux] *** Job is now running in tmux (survives outer kills) ***"
+echo "[gcdh-tmux] *** Job is now running in tmux ***"
 echo "[gcdh-tmux] Session : $SESSION"
 echo "[gcdh-tmux] Attach  : tmux attach -t $SESSION"
-echo "[gcdh-tmux] Monitor : gcdh --status --target-dir \"$(pwd)\""
-echo "[gcdh-tmux] (The current process can now exit safely.)"
+echo "[gcdh-tmux] Monitor : gcdh --status --target-dir \"$PWD\""
+echo "[gcdh-tmux] (You can safely exit now.)"
 echo
 
-# Optional: if the user wants to attach immediately in interactive use
 if [[ -t 1 ]]; then
-    echo "[gcdh-tmux] Attaching now (Ctrl-b d to detach and leave it running)..."
+    echo "[gcdh-tmux] Attaching now (Ctrl-b d to detach)..."
     sleep 0.5
     exec tmux attach -t "$SESSION"
 fi
