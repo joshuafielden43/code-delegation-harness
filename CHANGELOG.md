@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Dogfood Tooling & Ongoing Normalization Work
+- Added `tag-nuc-casing-micro.md` and companion `tag-nuc-casing-apply.md` prompts. These enable tightly scoped, high-discipline micro-passes to resolve specific open threads (such as the nuc casing conflict surfaced during v5) while maintaining all strict validation gates, rich PROGRESS checkpoints for reviewer notes, and the candidate → temp-snapshot → promote discipline.
+- Continued active dogfooding of small, controlled tag normalization slices on 0.3.1 (v5 controlled widening followed by nuc micro). This validates the harness for real many-small-edits grooming workloads and exercises the improved synthesis + reporting paths.
+
+### Repository & Release Hygiene
+- Significant worktree cleanup and improved tracking of active dogfood prompts and the single source of truth transcript.
+- Ongoing maintenance of the `MEETING_OF_MODELS_TRANSCRIPT.md` with current dogfood status to keep the authoritative record up to date.
+
 ## [0.3.1] - 2026-05-30
 
 **Patch release: Post-0.3.0 hardening + grooming / normalization notes improvements.**
