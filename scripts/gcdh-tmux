@@ -24,8 +24,13 @@ fi
 
 SESSION="cdh-$(date +%s)-$$"
 
-# Reconstruct the command safely
-CMD="cd \"$(pwd)\" && GCDH_IN_TMUX=1 gcdh $*"
+# Reconstruct the command using Python's shlex for safe quoting
+# (handles spaces, quotes, $, etc. in --task and other arguments correctly)
+CMD=$(python3 -c "
+import shlex, sys, os
+args = sys.argv[1:]
+print('cd ' + shlex.quote(os.getcwd()) + ' && GCDH_IN_TMUX=1 gcdh ' + ' '.join(shlex.quote(a) for a in args))
+" "$@")
 
 echo "[gcdh-tmux] Launching in detached tmux session: $SESSION"
 tmux new-session -d -s "$SESSION" "$CMD"

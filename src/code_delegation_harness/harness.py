@@ -10,6 +10,8 @@ Designed to keep the primary persona clean while getting real implementation
 work done reliably.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -1941,8 +1943,8 @@ def main():
         for sf in Path(target_dir).glob(".cdh-run-*.status"):
             try:
                 sm = StatusManager(sf)
-                if sm.load() and sm.looks_dead(max_silence_seconds=300):
-                    sm.mark_crashed("Reaped by --reap-dead (no heartbeat for >5 minutes)")
+                if sm.load() and sm.looks_dead(max_silence_seconds=300, check_pid=True):
+                    sm.mark_crashed("Reaped by --reap-dead (no heartbeat for >5 minutes and PID not alive)")
                     reaped += 1
                     print(f"[cdh] Reaped dead run: {sf.name}")
             except Exception:

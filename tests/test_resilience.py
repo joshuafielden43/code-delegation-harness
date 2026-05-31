@@ -207,6 +207,9 @@ class TestReapAndStatusDeadDetection(unittest.TestCase):
         sm = StatusManager.create_new(run_id, f"stale-{run_id}", "stale task", str(td), "grok-build", state=state)
         old = (datetime.now() - timedelta(seconds=400)).isoformat()
         sm._data["last_heartbeat_at"] = old
+        # Simulate a dead PID so that --reap-dead with check_pid=True will still reap it.
+        # (Real runs record the launcher PID; here we want the time-based + dead-PID case.)
+        sm._data["pid"] = 999999999  # almost certainly not alive
         sm._atomic_write()
         return sf
 
