@@ -308,3 +308,24 @@ All per standing directive to drive the parallel resilience/synthesis work (item
 This round closes the remaining gaps identified after the 0.3.0 + grooming-notes work. The harness is now materially stronger on exactly the paths the reviewer exercised.
 
 **0.3.1 Release** — All reviewer fixes + grooming notes hardening packaged as 0.3.1 (see CHANGELOG.md). Version bumped in pyproject.toml + __init__.py. Annotated tag `v0.3.1` prepared. This is the version that should be used for the next round of dogfooding (tiny yt→youtube validation slice and beyond).
+---
+
+## Current Dogfood Status (as of late May 2026)
+
+**Latest run**: v5 controlled widening (youtube + cli + cron clusters) on 0.3.1 — completed cleanly with honest `PARTIAL`, strong artifacts, and good cluster discovery by the agent. All gates passed.
+
+**Current run in flight** (launched by Honey):
+- Nuc casing micro-pass (tiny one-off to close the open nuc/NUC conflict flagged in v5).
+- Prompt: `tag-nuc-casing-micro.md`
+- Target: `/tmp/tag-nuc-casing`
+- Using the same strict discipline + 0.3.1 resilience.
+- Background + notify-on-complete.
+
+**Agreed direction**:
+- Tag normalization remains the active high-leverage thread (tightly controlled slices).
+- Proxmox third-pass refinements are still desired but deprioritized for now (user moving on it out of necessity).
+
+**Next expected action**: Honey will post artifacts + review of the nuc micro when complete. At that point we will decide on follow-up (apply any nuc decision, next small tag cluster, or other).
+
+All work continues to flow through the Dialogue channel. The nuc micro was prepared and launched as the immediate contained next step after v5 success.
+
