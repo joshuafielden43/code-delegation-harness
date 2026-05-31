@@ -10,6 +10,8 @@ This directory contains the active, high-discipline prompts used for real dogfoo
 | `tag-v2-scanner-seed-v5.md` | Controlled widening after v4 success (youtube + 1–2 additional small clusters) | Active / recently run | Used for the v5 run on 0.3.1. Agent performed discovery of `cli` + `cron` clusters |
 | `tag-nuc-casing-micro.md` | Tiny one-off to resolve the "nuc"/"NUC" casing conflict surfaced in v5 | In flight (as of late May 2026) | Launched against `/tmp/tag-nuc-casing` |
 | `tag-nuc-casing-apply.md` | Companion prompt to cleanly close the loop on the nuc decision (apply patches or document final state) | Ready | Use after the micro-pass results are reviewed |
+| `proxmox-control-provisioning-v1.md` | Implement real `create-lxc` in the proxmox-control skill on live hardware (`proxmox01`) | Ready to launch | First major provisioning implementation pass via harness |
+| `proxmox-control-create-lxc-notes.md` (in references/) | Supporting notes and known patterns for the create-lxc implementation | Supporting material | Created to accelerate the v1 provisioning pass |
 
 ## Usage Pattern
 
