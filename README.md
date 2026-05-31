@@ -73,7 +73,11 @@ chmod +x bin/gcdh
 export PATH="$PWD/bin:$PATH"
 
 gcdh --help
-gcdh --quiet --task "..." --target-dir /path/to/project --output-file result.json
+gcdh --quiet --long-running --task "..." --target-dir /path/to/project --output-file result.json
+
+# For any real ambitious or long-running dogfood work (skill extensions, full features, Proxmox-style work, etc.),
+# you should almost always use --long-running (or --keep-driving). It enables the ruthless completion bias,
+# dynamic fresh verification, and proper resource bumps so runs actually finish instead of dying early.
 ```
 
 **Installation**
@@ -115,6 +119,7 @@ This design makes it a strong primitive for building reliable delegation into la
 
 Long-running tasks are well supported:
 - Use `--timeout` (seconds) and `--max-turns` to give big jobs room to breathe.
+- For *ambitious long-running implementation* (the primary use case: e.g. extending skills like proxmox-control with real guest-exec/resize/discovery features + tests + promotion, all via harness only): add `--long-running --wait-for-completion --max-wait 86400 --run-name "my-ambitious-job"`. This enables bumped limits, dynamic PROGRESS.json injection on every background probe, and the ultra-ruthless baked-in "job to the end + mandatory fresh live verification (no stale VM refs) + no early summary" protocol.
 - Add `--wait-for-completion --max-wait 14400` (for example) and the wrapper will automatically poll until a background run finishes, then deliver the complete artifacts (full .json + .report.md + .patch + .run-meta.json).
 - Persistent `.cdh-run-<id>.status` files (with `last_heartbeat_at`, pid, full prompt) are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded / crashed). See `--status`, `--reap-dead`, `--resume`, the operational runbook in `docs/operations/`, and `scripts/monitor_cdh_status.py` for production monitoring and recovery.
 - Use `--status --target-dir /path` at any time to see both active and completed runs in that tree.

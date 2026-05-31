@@ -64,7 +64,7 @@ See [output-artifacts.md](../usage/output-artifacts.md) for the detailed schema.
 1. User invokes `gcdh` with task + target directory.
 2. Harness builds a high-signal prompt that includes strict path rules and a required structured summary format.
 3. The inner model (via `grok` CLI or future adapters) is invoked.
-4. If it times out and `--wait-for-completion` is set, the harness enters a resilient polling loop using the status file.
+4. If it times out and `--wait-for-completion` is set, the harness enters a resilient polling loop using the status file. (Post-2026-05 hardening: every probe dynamically reloads + injects the *latest* agent `PROGRESS.json` + anti-stale instructions so long jobs make real incremental progress across interruptions. `--long-running` bumps all budgets and activates the full ruthless "job-to-the-end" prompt language.)
 5. On completion, raw output is parsed for the `=== DELEGATION SUMMARY ===` block. If the exact markers are missing (common on long runs), best-effort synthesis is performed using the agent's `PROGRESS.json` checkpoints. The result is marked with `summary_synthesized_from_checkpoint`.
 6. Results are normalized, diffs are computed, a patch is generated if needed, and all artifacts are written.
 

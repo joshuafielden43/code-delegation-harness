@@ -42,6 +42,15 @@ Status files are the **single source of truth** for background run lifecycle. Th
 
 **Critical Limitation (documented in source)**: During the blocking `call_model_headless` (the long `grok` subprocess call, default 1800s timeout), **no heartbeats are emitted**. A legitimately long inner run (> ~5 minutes) can be misclassified as dead by `--status`/`--reap-dead` or external watchers until the next poll/heartbeat point in the wait loop (or completion).
 
+**Strong recommendation**: For any real ambitious or long-running dogfood work, **always launch with --long-running** (or --keep-driving).
+
+This is not optional for serious runs. It:
+- Bumps timeouts to multi-hour values automatically.
+- Injects the full ruthless "job to the end" + mandatory fresh verification language.
+- Enables dynamic fresh checkpoint injection on *every single probe* in the wait loop.
+
+See the updated usage-notes.md for the exact recommended pattern. Do not launch real Proxmox-style or multi-hour skill extension work without it.
+
 Mitigations (see monitor script):
 - Use higher `--max-wait` and silence threshold (e.g. 1800s) for known-long tasks.
 - Optional PID liveness check in monitor (`os.kill(pid, 0)` on Unix — cheap, no side effects).

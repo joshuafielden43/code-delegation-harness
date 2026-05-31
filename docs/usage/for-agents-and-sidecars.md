@@ -12,6 +12,7 @@ The Code Delegation Harness was explicitly designed to be driven by other agents
 
 ## Recommended Pattern for Agents
 
+For normal/short tasks:
 ```bash
 gcdh \
   --quiet \
@@ -21,6 +22,21 @@ gcdh \
   --wait-for-completion \
   --max-wait 14400
 ```
+
+**For any serious, ambitious, or long-running work (the primary dogfood use case):**
+```bash
+gcdh \
+  --quiet \
+  --long-running \
+  --task "..." \
+  --target-dir /path/to/project \
+  --output-file /tmp/delegation-$(date +%s).json \
+  --wait-for-completion \
+  --max-wait 86400 \
+  --run-name "important-dogfood-run"
+```
+
+`--long-running` is strongly recommended for almost all real production/dogfood delegation. It is the main switch that makes long jobs actually complete instead of dying early or relying on stale state.
 
 Then read the output JSON (and companion `.report.md` / `.patch` if they exist).
 
