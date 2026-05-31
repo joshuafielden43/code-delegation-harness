@@ -27,7 +27,7 @@ from .status import StatusManager, register_crash_protection
 try:
     __version__ = _pkg_version("code-delegation-harness")
 except (PackageNotFoundError, Exception):
-    __version__ = "0.3.0"
+    __version__ = "0.3.1"
 
 __all__ = [
     "main",

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.1] - 2026-05-30
+
+**Patch release: Post-0.3.0 hardening + grooming / normalization notes improvements.**
+
+This release addresses remaining issues identified in detailed external review of the 0.3.0 resilience work and the new grooming-oriented synthesis features. It makes long-running background recovery and vault-style many-small-edits workloads even more trustworthy and reviewer-friendly.
+
+### Critical Fixes (P1)
+- Fixed `NameError: name 'quiet' is not defined` on `--resume` and timed-out `--wait-for-completion` paths (affected any non-trivial background recovery).
+- Fixed premature creation of `.crashed` sentinels inside `register_crash_protection()`. Sentinels are now written *only* on actual crash paths (`_mark_active_run_crashed`). This eliminates false "crashed" reports for live runs while preserving the lightweight signal-context marker for `--reap-dead`.
+- Best-effort summary synthesis (used when agents omit the `=== DELEGATION SUMMARY ===` markers on long runs) now applies the same ownership, mode, and 64 KiB size guards as `load_checkpoint_context()`. Closes a bypass that could have allowed tampered or huge PROGRESS files to pollute human reports and result JSON.
+- Expanded `--resume` terminal-state short-circuit to all final states (`failed`, `completed_no_changes`, etc.) so already-finished work is never re-launched.
+
+### Security & Consistency (P2)
+- Insecure crash sentinels are now fail-closed (consistent with main status files). Untrusted sentinels are rejected instead of being silently promoted to "crashed" state.
+
+### Grooming / Normalization Notes (Honey v4 Feedback)
+- First-class support in reports for high-signal grooming work: structured `Grooming / Normalization Notes`, `Run Intent`, rich `cluster_evidence` / `validation_status` / `real_target_evidence` lifting, improved normalization grouping (→ targets), and clean Recovery Sources JSON previews.
+- v4 (and future) dogfood prompts now document the recommended rich PROGRESS.json shape that feeds these reviewer-friendly sections.
+- Directly enables the quality of feedback demonstrated on the tag v4 validation slice.
+
+### Testing & Documentation
+- +3 targeted regression tests (48 total). All reviewer repro cases now covered.
+- Updated `MEETING_OF_MODELS_TRANSCRIPT.md` (single source of truth) with full work log for the reviewer round.
+- Runbook and other docs refreshed.
+
+All changes are backward-compatible for normal usage. 0.3.1 is the recommended version for any ambitious or long-running delegation, especially grooming / normalization workloads on live data.
+
 ## [0.3.0] - 2026-05-30
 
 **Major release: Production-grade long-running and background resilience.**

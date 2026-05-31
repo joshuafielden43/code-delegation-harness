@@ -101,7 +101,9 @@ class StatusManager:
                 if require_owner_and_secure:
                     st = sentinel.stat()
                     if st.st_uid != os.getuid() or (st.st_mode & 0o022):
-                        pass  # still treat as insecure but proceed to mark
+                        # Fail closed: insecure sentinel is not trusted (matches status file behavior)
+                        self._data = {"_insecure": True, "reason": "insecure_crash_sentinel"}
+                        return False
                 reason = sentinel.read_text().strip()
                 self._data = {"state": "crashed", "crash_reason": reason, "_from_sentinel": True}
                 return True
@@ -124,6 +126,15 @@ class StatusManager:
         try:
             raw = self.status_file.read_text()
             self._data = json.loads(raw)
+            # Proactive cleanup: if we loaded a terminal non-crashed state, remove any stale sentinel
+            if self._data.get("state") in ("completed", "failed", "max_wait_exceeded"):
+                sentinel = self.status_file.with_suffix(self.status_file.suffix + ".crashed")
+                if sentinel.exists():
+                    try:
+                        sentinel.unlink()
+                        print(f"[cdh] Cleaned stale crash sentinel for {self.status_file.name}", file=sys.stderr)
+                    except Exception:
+                        pass
             return True
         except json.JSONDecodeError:
             # Try to recover whatever we can (very defensive for long-running recovery)
@@ -198,6 +209,10 @@ class StatusManager:
         self._data["last_poll_at"] = datetime.now().isoformat()
         self._atomic_write()
 
+        # If we are moving to a terminal non-crashed state, clean any crash sentinel
+        if state in ("completed", "failed", "completed_no_changes", "max_wait_exceeded"):
+            self._cleanup_crash_sentinel()
+
     def mark_completed(self, exit_code: int, final_status: Optional[str] = None) -> None:
         self._data["state"] = "completed" if exit_code in (0, None) else "failed"
         if final_status:
@@ -207,12 +222,14 @@ class StatusManager:
         self._data["final_exit_code"] = exit_code
         self._data["ended_at"] = datetime.now().isoformat()
         self._atomic_write()
+        self._cleanup_crash_sentinel()
 
     def mark_max_wait_exceeded(self, elapsed: float) -> None:
         self._data["state"] = "max_wait_exceeded"
         self._data["elapsed_seconds"] = int(elapsed)
         self._data["ended_at"] = datetime.now().isoformat()
         self._atomic_write()
+        self._cleanup_crash_sentinel()
 
     def record_poll(self, elapsed: float, error: Optional[str] = None) -> None:
         self._data["elapsed_seconds"] = int(elapsed)
@@ -325,6 +342,18 @@ class StatusManager:
             # Best effort — never let status writing crash the harness
             pass
 
+    def _cleanup_crash_sentinel(self) -> None:
+        """Remove the lightweight crash sentinel if it exists.
+        Called on successful completion to prevent stale 'crashed' state on future loads.
+        """
+        try:
+            sentinel = self.status_file.with_suffix(self.status_file.suffix + ".crashed")
+            if sentinel.exists():
+                sentinel.unlink()
+        except Exception:
+            # Best effort — never let cleanup crash the harness
+            pass
+
     @property
     def state(self) -> str:
         return self._data.get("state", "unknown")
@@ -370,6 +399,18 @@ def _mark_active_run_crashed(reason: str = "Harness process terminated unexpecte
                     sm.mark_crashed(reason)
                     print(f"[cdh] Emergency: marked run as crashed on process exit ({reason})", file=sys.stderr)
                     _append_crash_log(_ACTIVE_STATUS_FILE, reason)
+
+                    # Write lightweight sentinel *only on actual crash* (secure 0o600).
+                    # This gives --reap-dead and load() a signal-context-safe marker even if
+                    # the full status JSON write is racy or the process is hard-killed shortly after.
+                    try:
+                        import os as _os2
+                        sentinel = _ACTIVE_STATUS_FILE.with_suffix(_ACTIVE_STATUS_FILE.suffix + ".crashed")
+                        fd = _os2.open(sentinel, _os2.O_CREAT | _os2.O_WRONLY | _os2.O_TRUNC, 0o600)
+                        with _os2.fdopen(fd, "w") as f:
+                            f.write(f"reason: {reason}\nat: {datetime.now().isoformat()}\n")
+                    except Exception as se:
+                        _append_crash_log(_ACTIVE_STATUS_FILE, f"SENTINEL_WRITE_ON_CRASH_FAILED: {se}")
         except Exception as e:
             # Record the protection failure itself for forensics
             _append_crash_log(_ACTIVE_STATUS_FILE, f"PROTECTION_FAILURE: {e} (original reason: {reason})")
@@ -408,17 +449,8 @@ def register_crash_protection(status_file: Path) -> None:
         except (ValueError, OSError):
             pass
 
-    # Also write a tiny sentinel file immediately (lightweight, safe in signal context)
-    # The next load() or --reap-dead will detect it and promote to full "crashed" state.
-    try:
-        sentinel = _ACTIVE_STATUS_FILE.with_suffix(_ACTIVE_STATUS_FILE.suffix + ".crashed")
-        # Secure create: open with 0o600 to avoid world-readable window
-        fd = _os.open(sentinel, _os.O_CREAT | _os.O_WRONLY | _os.O_TRUNC, 0o600)
-        with _os.fdopen(fd, "w") as f:
-            f.write(f"reason: signal/atexit\nat: {datetime.now().isoformat()}\n")
-    except Exception as e:
-        _append_crash_log(_ACTIVE_STATUS_FILE, f"SENTINEL_WRITE_FAILED: {e}")
-        pass
+    # Sentinel is now created *only* on actual crash paths (see _mark_active_run_crashed).
+    # Writing it here at registration time caused false "crashed" reports for every live run.
 
 
 def _is_owned_and_not_world_writable(path: Path) -> bool:

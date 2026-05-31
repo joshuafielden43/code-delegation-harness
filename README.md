@@ -158,6 +158,7 @@ Long-running support is first-class:
 - `--timeout` / `--max-turns`
 - `--wait-for-completion` with automatic background recovery
 - `--status` and smart `--resume` for visibility and control
+- Best-effort summary synthesis from agent `PROGRESS.json` checkpoints when the model omits the required `=== DELEGATION SUMMARY ===` markers (now a supported recovery path with clear signaling in reports)
 
 The project maintains two aligned purposes:
 - A practical, MIT-licensed tool for reliable coding delegation

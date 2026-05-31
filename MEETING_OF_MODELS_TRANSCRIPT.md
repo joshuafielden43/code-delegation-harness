@@ -210,6 +210,13 @@ I produced this complete single document first (per user instruction), capturing
 - `--detach` philosophy decision and wait-loop amplification hardening (explicitly noted in runbook + SECURITY.md as longer-term).
 - Bounded recursive globs (current glob is flat in target_dir only for status files; resume fallback uses `**` but now gated by `_read_status_secure`).
 
+**Post-Transcript Summary Recovery Hardening (executed while running controlled validation tests):**
+- Deepened best-effort synthesis in `_best_effort_summary_extraction`: now extracts structured fields (files lists, next_steps, change_summary) from agent checkpoints when the exact `=== DELEGATION SUMMARY ===` markers are missing.
+- Improved `render_human_report` with a clear `♻️ Summary Synthesized from Agent Checkpoints` section + explicit reviewer guidance.
+- Added multiple new tests for the recovery paths (synthesized flag propagation, rendering, structured extraction from checkpoints).
+- Updated key docs (runbook Section 9, README, this transcript) to reflect the new supported recovery capability.
+- New draft dogfood prompt created for the next high-leverage task (tag v2 scanner) incorporating the strengthened checkpoint + summary instructions.
+
 All changes are backward-compatible for trusted private target directories (the documented safe usage assumption).
 
 ---
@@ -245,3 +252,59 @@ All internal tests (34/34) and CLI smokes pass cleanly. The harness is materiall
 ---
 
 *End of single consolidated transcript. This document + the git diff of the changes made in the resolution pass constitute the complete deliverable.*
+
+---
+
+## Post-Transcript Grooming Notes Deepening Pass (Honey "better notes" steer)
+
+**Date:** Immediately following the sentinel + first-round grooming_notes landing (user: "better notes from honey." / "no, she gave you better notes").
+
+**Driver:** Honey's v4 tag validation review (detailed in Dialogue.md) was exceptionally high-signal:
+- Precise clarification of *run intent* (validation of strict gates, not "found work to do").
+- Independent cross-verification (her frontmatter parser).
+- Exact bug report on lingering .status.crashed sentinel (even on clean bg exit + complete artifacts) — which drove the final sentinel cleanup layers.
+- Emphasis on real-target evidence, decisions doc vs. patches distinction, canonical casing, and no synthetic pollution.
+
+**Work performed (parallel harness items 1/3/4 + grooming bias):**
+- Enhanced `_best_effort_summary_extraction` (harness.py): richer extraction of `cluster_evidence`/`validation_status`/`real_target_evidence`/`decisions`/`canonical_rules` etc.; improved →-aware grouping for normalization targets; always-produce structured grooming_notes for >3-item grooming runs.
+- First-class rendering in `render_human_report`: "♻️ Grooming / Normalization Notes" block (much less heuristic), new "Run Intent" section for validation-only PARTIALs, structured JSON Recovery Sources preview (key PROGRESS fields), rich evidence surfaced cleanly.
+- Propagation of all new fields through `normalize_result`.
+- 2 new targeted tests exercising exactly Honey v4-style rich evidence + honest "0 real patches, validation gates passed, PARTIAL is success" rendering. Updated prior grooming tests for improved output. Full suite 45/45 green.
+- Augmented the approved v4 dogfood prompt with recommended rich PROGRESS shape (so future agents automatically feed the harness material for Honey-grade notes).
+- Self-check dogfood: invoked synthesis+render against a synthetic `/tmp/...` target containing a realistic Honey v4-style PROGRESS.json with cluster_evidence + validation_status + real_target_evidence. Report correctly emitted prominent Grooming Notes, Run Intent, pretty JSON Recovery Sources, and honest no-changes + evidence.
+- CHANGELOG + this transcript updated.
+
+**Outcome:** The harness now turns the exact class of many-small-edits vault grooming / tag normalization work Honey does into review artifacts that practically write the high-signal, evidence-based, intent-clarifying notes for her (and future reviewers). Virtuous cycle: better artifacts → even better Honey feedback → still better harness.
+
+This pass was scoped, complete, and review-ready before any handoff. No partials shown.
+
+All per standing directive to drive the parallel resilience/synthesis work (items 1,3,4) while waiting, with explicit grooming/better-notes focus.
+
+---
+
+## Follow-up Reviewer Pass (Honey / external review of 0.3.0 + grooming-notes changes)
+
+**Date:** Post the "better notes" deepening (user relayed detailed review).
+
+**Review Findings (verbatim summary of P1/P2 items that remained):**
+- [P1] `harness.py:1584/1770` — bare `quiet=quiet` in resume and wait-for-completion paths (NameError on any non-trivial resume or timeout+--wait path). Exact repro: `--resume ... --max-wait 0 --poll-interval 0`.
+- [P1] `status.py:438` — `.crashed` sentinel written *unconditionally at registration time* inside `register_crash_protection()`. Combined with `load()` (line 97) treating sentinel as authoritative → false "crashed" for every live run from the library perspective; `--status` could disagree because it read JSON first.
+- [P1] `harness.py:603` (best-effort synthesis) — direct `read_text()` + `json.loads` of PROGRESS/TASK_STATE files with **zero** ownership/mode/size checks (bypassing the `load_checkpoint_context` + `_is_owned_and_not_world_writable` hardening from the original Meeting of Models P1 work). Attacker-controlled or huge checkpoints could poison reports/JSON on any long run that omitted the final markers.
+- [P2] `status.py:101` — insecure sentinel permission check did `pass` and still trusted the content (unlike the main status file path which fails closed).
+- [P2] `harness.py:1515` — resume short-circuit only covered `completed` + `max_wait_exceeded`; `failed` and `completed_no_changes` were still treated as resumable (risk of re-running already-final work).
+
+**All items fixed (complete, minimal, review-ready changes):**
+- `quiet` NameError: both call sites now use `getattr(args, "quiet", False)`. Exact repro command now succeeds (hits improved terminal short-circuit).
+- Sentinel timing: Removed the unconditional write from `register_crash_protection()`. Sentinel creation moved exclusively into the actual crash path `_mark_active_run_crashed` (still produces the lightweight 0o600 marker for signal-context resilience and --reap-dead).
+- Best-effort recovery now applies identical 64 KiB + `_is_owned_and_not_world_writable` guards before ingesting PROGRESS files into synthesized observations / grooming notes / result JSON. Insecure or oversized files are explicitly skipped with a note (no silent poisoning).
+- Insecure sentinel: now fail-closed exactly like status files (`_insecure` + return False; content never trusted).
+- Resume short-circuit: expanded to all known terminal states (`completed`, `failed`, `completed_no_changes`, `max_wait_exceeded`).
+- Added 3 targeted regression tests (sentinel-not-written-at-registration, insecure-sentinel-rejected, best-effort-security-guards). Full suite now 48/48.
+- Manual smoke of reviewer's exact `--resume` command + various --status / --prune paths confirmed clean.
+- Updated CHANGELOG (Unreleased) and this transcript.
+
+**Verification:** 48/48 tests pass. No behavior change for correct (owned, 0600) status/sentinel/checkpoint files. All reviewer repro cases now either work or fail closed with clear messages. Changes are backward-compatible under the documented threat model (private/trusted target_dir).
+
+This round closes the remaining gaps identified after the 0.3.0 + grooming-notes work. The harness is now materially stronger on exactly the paths the reviewer exercised.
+
+**0.3.1 Release** — All reviewer fixes + grooming notes hardening packaged as 0.3.1 (see CHANGELOG.md). Version bumped in pyproject.toml + __init__.py. Annotated tag `v0.3.1` prepared. This is the version that should be used for the next round of dogfooding (tiny yt→youtube validation slice and beyond).

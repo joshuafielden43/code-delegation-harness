@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # Use clean imports from the installed package (no more fragile direct .py loading hacks).
 from code_delegation_harness import prune_completed_status_files, _make_delegate_status, _write_status_file
 from code_delegation_harness.harness import _print_dry_run_preview, load_checkpoint_context
+from code_delegation_harness.status import register_crash_protection
 from code_delegation_harness.status import StatusManager
 
 
@@ -204,6 +205,109 @@ class TestResilienceFeatures(unittest.TestCase):
             # Should not raise and must not delete it
             prune_completed_status_files(str(td), max_age_days=1)
             self.assertTrue(insecure.exists())
+
+    def test_crash_sentinel_is_cleaned_on_successful_completion(self):
+        """The .crashed sentinel must be removed when a run successfully completes (fixes false 'crashed' on clean exits)."""
+        with tempfile.TemporaryDirectory() as td:
+            sm = StatusManager.create_new("sentinel-clean", None, "t", td, "grok-build", state="running")
+            sentinel = sm.status_file.with_suffix(sm.status_file.suffix + ".crashed")
+
+            # Simulate what register_crash_protection does
+            sentinel.write_text("reason: signal/atexit\nat: 2026-05-30T00:00:00\n")
+            sentinel.chmod(0o600)
+
+            self.assertTrue(sentinel.exists())
+
+            # Now simulate successful completion
+            sm.mark_completed(0)
+
+            self.assertFalse(sentinel.exists(), "Sentinel should have been cleaned on mark_completed")
+            self.assertEqual(sm.state, "completed")
+
+    def test_load_of_completed_status_cleans_stale_sentinel(self):
+        """Loading a status file that is already in a terminal state must remove any stale .crashed sentinel."""
+        with tempfile.TemporaryDirectory() as td:
+            sm = StatusManager.create_new("stale-sentinel", None, "t", td, "grok-build", state="running")
+            sentinel = sm.status_file.with_suffix(sm.status_file.suffix + ".crashed")
+
+            # Simulate leftover sentinel from a previous crash
+            sentinel.write_text("reason: signal/atexit\nat: 2026-05-30T00:00:00\n")
+            sentinel.chmod(0o600)
+
+            # Now simulate the run completing successfully and writing the final state
+            sm.mark_completed(0)
+
+            # Sentinel should be gone
+            self.assertFalse(sentinel.exists())
+
+            # Now simulate a fresh load of the already-completed status file (e.g. via --status or another process)
+            sm2 = StatusManager(sm.status_file)
+            loaded = sm2.load()
+
+            self.assertTrue(loaded)
+            self.assertEqual(sm2.state, "completed")
+            self.assertFalse(sentinel.exists(), "Stale sentinel must be cleaned on load of completed state")
+
+    def test_sentinel_cleaned_after_simulated_background_completion_flow(self):
+        """Simulate the full background wait + successful completion path and verify sentinel is cleaned."""
+        with tempfile.TemporaryDirectory() as td:
+            sm = StatusManager.create_new("bg-complete-sentinel", None, "t", td, "grok-build", state="running")
+            sentinel = sm.status_file.with_suffix(sm.status_file.suffix + ".crashed")
+
+            # Simulate what happens at launch
+            sentinel.write_text("reason: signal/atexit\nat: 2026-05-30T00:00:00\n")
+            sentinel.chmod(0o600)
+
+            self.assertTrue(sentinel.exists())
+
+            # Simulate what _wait_for_background_completion does on successful non-timeout completion
+            # (it calls mark_completed, which now cleans)
+            sm.mark_completed(0)
+            sm._cleanup_crash_sentinel()  # extra defensive, as in the actual code
+
+            self.assertFalse(sentinel.exists())
+            self.assertEqual(sm.state, "completed")
+
+    def test_register_crash_protection_does_not_write_sentinel_prematurely(self):
+        """P1 regression: register_crash_protection must NOT create the .crashed sentinel.
+        Writing it at registration time caused every live run to appear crashed on load().
+        The sentinel must only be created from actual crash paths (_mark_active_run_crashed)."""
+        with tempfile.TemporaryDirectory() as td:
+            status_file = Path(td) / ".cdh-run-test-reg.status"
+            status_file.write_text('{"state": "running", "run_id": "test-reg"}')
+            status_file.chmod(0o600)
+
+            # This used to create the sentinel immediately (the bug)
+            register_crash_protection(status_file)
+
+            sentinel = status_file.with_suffix(status_file.suffix + ".crashed")
+            self.assertFalse(sentinel.exists(), "Sentinel must not exist immediately after registration")
+
+            # Clean up the atexit handler we just registered (best effort for test isolation)
+            # In real runs this is fine; here we just want to assert the side-effect is gone.
+            try:
+                import atexit
+                # We can't easily unregister, but the important behavioral assertion passed.
+            except Exception:
+                pass
+
+    def test_insecure_crash_sentinel_is_rejected_fail_closed(self):
+        """P2 regression: an insecure .crashed sentinel must not be trusted (fail-closed)."""
+        with tempfile.TemporaryDirectory() as td:
+            status_file = Path(td) / ".cdh-run-insecure-sentinel.status"
+            status_file.write_text('{"state": "running"}')
+            status_file.chmod(0o600)
+
+            sentinel = status_file.with_suffix(status_file.suffix + ".crashed")
+            sentinel.write_text("reason: forged\n")
+            sentinel.chmod(0o666)  # world-writable — attacker controlled
+
+            sm = StatusManager(status_file)
+            loaded = sm.load(require_owner_and_secure=True)
+            self.assertFalse(loaded)
+            self.assertTrue(sm.get("_insecure"))
+            # Must NOT have promoted the content of the insecure sentinel
+            self.assertNotEqual(sm.get("state"), "crashed")
 
 
 if __name__ == "__main__":

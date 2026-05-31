@@ -255,6 +255,22 @@ All P0 and key P1 items from the multi-perspective review have been implemented 
 - New tests cover: world-writable checkpoint rejection, `looks_dead(check_pid=True)`, prune skipping insecure files.
 - Full threat model lives in SECURITY.md (assumption: target_dir is private/trusted).
 
+**Additional Post-Review Hardening (Summary & Output Recovery):**
+- When the inner agent omits the exact `=== DELEGATION SUMMARY ===` markers (common on very long or interrupted runs), the harness now performs best-effort synthesis by combining any partial model output with the agent's own `PROGRESS.json` / `TASK_STATE.md` checkpoints.
+- The normalized result now includes `summary_synthesized_from_checkpoint: true`.
+- `render_human_report` surfaces a clear `♻️ Summary Synthesized from Agent Checkpoints` section with review guidance.
+- Agents are explicitly instructed (in the system prompt) to treat their checkpoints as a primary source when writing the final summary.
+- This is now a supported, intentional recovery path rather than a failure mode.
+
+**Grooming / Normalization Notes (Honey v4 "better notes" feedback, 2026-05-30):**
+- Further deepened synthesis + rendering specifically for many-small-edits vault grooming and tag normalization workloads.
+- First-class `♻️ Grooming / Normalization Notes` section (with cluster_evidence, validation_status, real_target_evidence, decisions, canonical_rules, Run Intent callouts).
+- Structured JSON preview in Recovery Sources.
+- Improved grouping for normalization patterns (e.g. `old → canonical` targets).
+- v4 dogfood prompt now documents the recommended rich PROGRESS.json fields that power these high-signal reviewer notes.
+- New regression tests + self-check dogfood using realistic Honey v4 validation-pass checkpoints.
+- Result: harness artifacts for grooming runs now make it trivial for reviewers to produce the precise, evidence-based, intent-clarifying feedback Honey demonstrated on v4. Direct response to user steer "better notes from honey."
+
 These changes directly address the injection, permission-race, auditability, and durability concerns raised by the specialist reviewers. The single source of truth for the review transcript and backlog closure is `MEETING_OF_MODELS_TRANSCRIPT.md` in the repo root.
 
 ---

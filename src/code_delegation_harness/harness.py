@@ -97,55 +97,57 @@ INSTRUCTIONS:
 - Checkpoint after every major change, after finishing a function/class, or at least every 5-8 tool uses.
 - This is your lifeline if the process dies. The next invocation (or a human) can read it and continue cleanly.
 - Never rely only on your final summary — checkpoint early and often.
+- When writing your final === DELEGATION SUMMARY === block, you are encouraged to use the content of your most recent PROGRESS.json (or equivalent checkpoint) as the primary source of truth for the SUMMARY, FILES_*, NEXT_STEPS, and OBSERVATIONS sections. This produces dramatically better results on long or interrupted runs.
 
 **PLANNING & COMPLETENESS (especially for complex or multi-part tasks):**
 - For any task with multiple components, commands, safety rules, or significant logic: First create an explicit plan or checklist of everything that needs to be built, based on the full task description.
 - Implement against that plan.
 - Before emitting the final summary, perform a deliberate self-review: Walk through the plan and confirm every major item is actually implemented and working (not left as a stub, placeholder, or "would do X"). If something must be deferred, clearly document it with justification and the minimal next step.
 
-**MANDATORY FINAL OUTPUT FORMAT (NON-NEGOTIABLE):**
-You MUST end your response with the exact marker below. This is required for automated parsing. Do not omit it, paraphrase it, or place it anywhere except at the very end.
+**MANDATORY FINAL OUTPUT FORMAT (NON-NEGOTIABLE — ESPECIALLY ON LONG-RUNNING OR BACKGROUND TASKS):**
+You **MUST** terminate your entire final response with the exact two markers below, in this order, with nothing after the closing marker. This is the only way the harness can reliably extract results, especially after long runs, crashes, or --resume recoveries.
 
 === DELEGATION SUMMARY ===
-SUMMARY: <One paragraph plain-English summary of what was accomplished. Be precise about behavior changes.>
+SUMMARY: <One clear paragraph summary of what was actually accomplished.>
 
 FILES_CREATED:
-- path/to/new/file1.py
-- path/to/new/file2.py
+- ...
 
 FILES_MODIFIED:
-- path/to/changed/file.py (1-2 sentence description of what changed and why)
+- ...
 
 FILES_DELETED:
-- path/to/deleted/file.py (if any)
+- ...
 
 VERIFICATION:
-- <What was tested or checked>
-- <Any commands run and their results>
+- ...
 
-NEXT_STEPS (if any):
-- <Recommended follow-up actions>
-
-=== END SUMMARY ===
-
-If you forget the exact markers, the harness cannot automatically extract the results. Always terminate with both the opening and closing markers exactly as shown.
+NEXT_STEPS:
+- ...
 
 CHANGE_SUMMARY:
-- For each modified file, briefly note the net effect (e.g. "Added input validation and error handling", "Refactored X into Y for clarity").
+- ...
 
 NO_CHANGES:
-- If you made no modifications at all (read-only inspection or analysis only), explicitly state: "No files were created, modified, or deleted."
+- (only if truly nothing was created/modified/deleted)
 
 OBSERVATIONS:
-- For read-only or no-change runs: list the main files or areas you inspected and the key findings or recommendations in 1-3 short bullets. This turns inspection work into immediately usable signal.
-- For runs that made changes: optional but welcome (e.g. "Noted two other call sites that may benefit from the same pattern later").
+- ...
 
-ERRORS (if any):
-- List any errors, warnings, or partial failures encountered during the work.
+ERRORS:
+- ...
 
 === END SUMMARY ===
 
-Do not put the summary anywhere else. The wrapper will parse the section after the final "=== DELEGATION SUMMARY ===" marker.
+CRITICAL RULES FOR THE SUMMARY BLOCK:
+- The opening marker `=== DELEGATION SUMMARY ===` and closing marker `=== END SUMMARY ===` must appear **exactly** as shown, at the very end of your response.
+- On long-running, background, or resumed tasks this is even more important — the harness may recover from a crash or timeout using your PROGRESS.json checkpoints. If you do not emit the exact markers, the automated extraction fails and you will see "missing_summary_marker" errors.
+- If you are unsure, copy the template above verbatim and fill it in.
+- Never put the summary block in the middle of your thinking or before you are truly finished.
+
+If the exact markers are missing, the harness will still attempt best-effort recovery using your PROGRESS.json checkpoints. The result will be marked with `summary_synthesized_from_checkpoint: true` and the human report will contain a dedicated recovery section. This is now a supported recovery path for long-running work.
+
+Do not put anything after `=== END SUMMARY ===`.
 
 Be explicit about whether changes were made. If nothing was changed, say so clearly in the NO_CHANGES section.
 """
@@ -456,6 +458,8 @@ def _wait_for_background_completion(
             # Mark completed using the manager
             exit_code = result.get("exit_code", 0)
             status_manager.mark_completed(exit_code)
+            # Extra defensive cleanup of any crash sentinel (in case mark_completed path changes later)
+            status_manager._cleanup_crash_sentinel()
 
             if not quiet:
                 print(f"[cdh] Background run {run_id} ({run_name or ''}) completed after {int(elapsed)}s total wait.")
@@ -466,21 +470,21 @@ def _wait_for_background_completion(
             return result
 
 
-def parse_delegation_summary(text: str) -> dict:
+def parse_delegation_summary(text: str, target_dir: str | None = None) -> dict:
     """
     Extract the structured DELEGATION SUMMARY section if present.
     Now also captures CHANGE_SUMMARY and ERRORS sections when present.
 
-    If the exact marker is missing, attempts a best-effort extraction and
-    explicitly marks parsed=False with a clear warning. This helps diagnose
-    cases where the model omitted the required block (common in long-running runs).
+    If the exact marker is missing, attempts a best-effort extraction (now enhanced
+    with checkpoint recovery) and explicitly marks parsed=False with a clear warning.
+    This is especially common (and now much better handled) on long-running/background tasks.
     """
     marker = "=== DELEGATION SUMMARY ==="
     end_marker = "=== END SUMMARY ==="
 
     if marker not in text:
-        # Best-effort fallback: still try to pull out obvious sections if the model was close
-        fallback = _best_effort_summary_extraction(text)
+        # Best-effort fallback with checkpoint enrichment when available
+        fallback = _best_effort_summary_extraction(text, target_dir)
         fallback["parsed"] = False
         fallback["warning"] = "Exact '=== DELEGATION SUMMARY ===' marker was missing. The model did not follow the required output format."
         return fallback
@@ -551,8 +555,13 @@ def parse_delegation_summary(text: str) -> dict:
         return {"raw_text": text, "parsed": False, "parse_error": str(e)}
 
 
-def _best_effort_summary_extraction(text: str) -> dict:
-    """Crude fallback when the model omitted the exact marker. Extracts what it can."""
+def _best_effort_summary_extraction(text: str, target_dir: str | None = None) -> dict:
+    """
+    Best-effort extraction when the model omitted the exact === DELEGATION SUMMARY === markers.
+    Now also attempts to incorporate the most recent PROGRESS.json / TASK_STATE.md
+    from the target directory as a high-signal source of truth (especially valuable
+    after long-running or crashed/resumed tasks).
+    """
     result = {
         "summary": "",
         "files_created": [],
@@ -563,8 +572,10 @@ def _best_effort_summary_extraction(text: str) -> dict:
         "change_summary": "",
         "errors": [],
         "observations": "",
+        "synthesized_from_checkpoint": False,
     }
 
+    # 1. Try to extract whatever structure exists in the raw response
     lines = text.splitlines()
     current = None
     for line in lines:
@@ -578,11 +589,154 @@ def _best_effort_summary_extraction(text: str) -> dict:
         elif stripped.startswith("- ") or stripped.startswith("* "):
             if current in ("files_created", "files_modified", "files_deleted"):
                 result[current].append(stripped[2:].strip())
-        # Very rough heuristics for other sections
-        if "file" in stripped.lower() and "create" in stripped.lower():
-            current = "files_created"
-        elif "file" in stripped.lower() and "modif" in stripped.lower():
-            current = "files_modified"
+
+    # 2. If we have a target_dir, try to enrich from the latest checkpoint the agent was told to write.
+    # This is one of the big resilience wins — even if the model forgot the final markers,
+    # its PROGRESS.json often contains excellent structured state.
+    if target_dir:
+        candidates = [
+            Path(target_dir) / "PROGRESS.json",
+            Path(target_dir) / "TASK_PROGRESS.json",
+            Path(target_dir) / "TASK_STATE.md",
+        ]
+        MAX_CHECKPOINT_BYTES = 65536  # 64 KiB safety cap (same as load_checkpoint_context)
+        for p in candidates:
+            if p.exists():
+                try:
+                    # SECURITY: apply the same ownership/mode + size guards used for prompt-injectable
+                    # checkpoints. This closes the bypass where best-effort recovery could ingest
+                    # planted or enormous PROGRESS.json files into human reports / result JSON.
+                    if p.stat().st_size > MAX_CHECKPOINT_BYTES:
+                        result["observations"] = (result.get("observations", "") +
+                            f"\n\n[Best-effort recovery from {p.name} SKIPPED: too large ({p.stat().st_size} bytes)]").strip()
+                        continue
+                    if not _is_owned_and_not_world_writable(p):
+                        result["observations"] = (result.get("observations", "") +
+                            f"\n\n[Best-effort recovery from {p.name} SKIPPED: insecure ownership/permissions]").strip()
+                        continue
+
+                    content = p.read_text().strip()[:MAX_CHECKPOINT_BYTES]
+                    if content:
+                        result["synthesized_from_checkpoint"] = True
+                        result["observations"] = (result.get("observations", "") + f"\n\n[Best-effort recovery from {p.name}]\n{content}").strip()
+
+                        ckpt_data = {}
+                        try:
+                            ckpt_data = json.loads(content) if content.startswith("{") else {}
+                        except Exception:
+                            pass
+
+                        # Deepen extraction: pull structured lists from checkpoint when model gave none
+                        if ckpt_data and isinstance(ckpt_data, dict):
+                            # Support more common checkpoint keys
+                            for key in ["files_created", "files_modified", "files_deleted"]:
+                                if not result[key] and key in ckpt_data:
+                                    val = ckpt_data[key]
+                                    if isinstance(val, list):
+                                        result[key] = [str(item) for item in val[:8]]
+
+                            # Fallback: treat "completed" items as files_modified for grooming-style runs
+                            # (many small precise edits across files is very common in vault/tag normalization)
+                            completed = ckpt_data.get("completed", []) if isinstance(ckpt_data, dict) else []
+                            if isinstance(completed, list) and len(completed) >= 5 and not any(result[k] for k in ["files_created", "files_modified", "files_deleted"]):
+                                result["files_modified"] = [str(item) for item in completed[: min(15, len(completed)) ]]
+
+                            if not result.get("next_steps") and "next_steps" in ckpt_data:
+                                result["next_steps"] = "\n".join([f"- {s}" for s in ckpt_data["next_steps"] if isinstance(s, str)])
+
+                            if not result.get("verification") and "verification" in ckpt_data:
+                                result["verification"] = str(ckpt_data["verification"])[:1000]
+
+                            if not result.get("change_summary") and "completed" in ckpt_data:
+                                completed = ckpt_data.get("completed", [])
+                                if isinstance(completed, list) and completed:
+                                    if len(completed) > 8:
+                                        # Grooming-style: many small precise edits — create a compact, high-signal summary
+                                        result["change_summary"] = f"Grooming / normalization work across {len(completed)} items (recovered from checkpoint):\n"
+                                        # Improved grouping for normalization patterns (tags, paths, → arrows common in vault work)
+                                        groups = {}
+                                        for item in completed:
+                                            s = str(item)
+                                            if "→" in s:
+                                                # Normalization arrow: group by target canonical form
+                                                key = s.split("→")[-1].strip()[:40]
+                                            elif ":" in s:
+                                                key = s.split(":")[0]
+                                            else:
+                                                key = s[:30]
+                                            if key not in groups:
+                                                groups[key] = []
+                                            groups[key].append(s)
+
+                                        for key, items in list(groups.items())[:5]:
+                                            if len(items) > 1:
+                                                result["change_summary"] += f"- {key}... ({len(items)} changes)\n"
+                                            else:
+                                                result["change_summary"] += f"- {items[0]}\n"
+                                        if len(completed) > 12:
+                                            result["change_summary"] += f"... and {len(completed) - sum(len(v) for v in list(groups.values())[:5])} more"
+                                    else:
+                                        result["change_summary"] = "Key work recovered from checkpoint:\n" + "\n".join(f"- {c}" for c in completed[:6])
+
+                            if not result.get("observations") or len(result.get("observations", "")) < 50:
+                                if "open_issues" in ckpt_data or "gotchas" in ckpt_data:
+                                    extra = []
+                                    if ckpt_data.get("open_issues"):
+                                        extra.append("Open issues: " + "; ".join(str(i) for i in ckpt_data["open_issues"][:3]))
+                                    if ckpt_data.get("gotchas"):
+                                        extra.append("Gotchas: " + "; ".join(str(g) for g in ckpt_data["gotchas"][:3]))
+                                    if extra:
+                                        result["observations"] = (result.get("observations", "") + "\n" + "\n".join(extra)).strip()
+
+                            # Always extract rich evidence fields when present (enables Honey-style high-signal notes)
+                            if ckpt_data:
+                                for rich_key in ("evidence", "cluster_notes", "cluster_evidence", "decisions", "per_file_rationale", "validation_gates", "real_target_evidence", "canonical_rules"):
+                                    if rich_key in ckpt_data and rich_key not in result:
+                                        result[rich_key] = ckpt_data[rich_key]
+                                if "validation_status" in ckpt_data:
+                                    result["validation_status"] = ckpt_data["validation_status"]
+
+                            # Produce (or enrich) dedicated grooming notes for high-signal vault normalization work
+                            if isinstance(completed, list) and len(completed) > 3:
+                                grooming_notes = [f"Total items processed (from checkpoint): {len(completed)}"]
+                                if ckpt_data.get("gotchas"):
+                                    grooming_notes.append("Gotchas from agent: " + "; ".join(str(g) for g in ckpt_data["gotchas"][:5]))
+                                if ckpt_data.get("open_issues"):
+                                    grooming_notes.append("Open issues from agent: " + "; ".join(str(i) for i in ckpt_data["open_issues"][:5]))
+                                # Surface cluster-level evidence/rationale when the agent provided it (tag grooming etc.)
+                                ce = ckpt_data.get("cluster_evidence") or ckpt_data.get("cluster_notes")
+                                if isinstance(ce, dict):
+                                    for cname, cinfo in list(ce.items())[:4]:
+                                        if isinstance(cinfo, dict):
+                                            grooming_notes.append(f"  {cname}: reviewed={cinfo.get('reviewed', '?')}, canonical={cinfo.get('already_canonical', cinfo.get('canonical', 0))}, deferred={cinfo.get('deferred', 0)}")
+                                        else:
+                                            grooming_notes.append(f"  {cname}: {str(cinfo)[:90]}")
+                                elif isinstance(ce, list) and ce:
+                                    grooming_notes.append("Clusters: " + "; ".join(str(c) for c in ce[:5]))
+                                result["grooming_notes"] = "\n".join(grooming_notes)
+
+                        # Narrative summary fallback
+                        if not result.get("summary") or len(result.get("summary", "")) < 25:
+                            if ckpt_data and isinstance(ckpt_data, dict):
+                                completed = ckpt_data.get("completed") or ckpt_data.get("current_phase") or ""
+                                if completed:
+                                    # For grooming runs, try to surface the dominant pattern
+                                    if isinstance(completed, list) and len(completed) > 5:
+                                        prefixes = {}
+                                        for item in completed:
+                                            pref = str(item).split('→')[0].split(':')[0] if '→' in str(item) or ':' in str(item) else str(item)[:25]
+                                            prefixes[pref] = prefixes.get(pref, 0) + 1
+                                        top = sorted(prefixes.items(), key=lambda x: -x[1])[:2]
+                                        pattern = ", ".join(f"{p} ({c})" for p, c in top)
+                                        result["summary"] = f"Recovered grooming work from checkpoint. Main patterns: {pattern}. Total items: {len(completed)}"
+                                    else:
+                                        result["summary"] = f"Recovered work from checkpoint. Last known progress: {str(completed)[:220]}"
+                            else:
+                                result["summary"] = f"Work recovered from checkpoint in {p.name} (see observations for full state)."
+
+                        break
+                except Exception:
+                    pass
 
     return result
 
@@ -752,7 +906,7 @@ def normalize_result(raw_result: dict, target_dir: str = None) -> dict:
     Internal helpers extracted for modularity; public API and observable behavior unchanged.
     """
     text = raw_result.get("text", "") or raw_result.get("raw_stdout", "")
-    parsed = parse_delegation_summary(text)
+    parsed = parse_delegation_summary(text, target_dir)
 
     created = parsed.get("files_created", []) or []
     modified = parsed.get("files_modified", []) or []
@@ -778,7 +932,16 @@ def normalize_result(raw_result: dict, target_dir: str = None) -> dict:
         "next_steps": parsed.get("next_steps", ""),
         "observations": parsed.get("observations", "").strip() or None,
         "has_structured_summary": parsed.get("parsed", False),
+        "summary_synthesized_from_checkpoint": parsed.get("synthesized_from_checkpoint", False),
+        "grooming_notes": parsed.get("grooming_notes"),
         "metadata": raw_result.get("metadata", {}),
+        # Rich evidence fields for higher-signal grooming/normalization notes (sourced from agent checkpoints)
+        "evidence": parsed.get("evidence"),
+        "cluster_evidence": parsed.get("cluster_evidence") or parsed.get("cluster_notes"),
+        "decisions": parsed.get("decisions"),
+        "validation_status": parsed.get("validation_status"),
+        "real_target_evidence": parsed.get("real_target_evidence"),
+        "canonical_rules": parsed.get("canonical_rules"),
     }
 
     # Surface parsed errors if present
@@ -906,6 +1069,52 @@ def render_human_report(result: dict) -> str:
             lines.append("Review carefully — the prior execution did not complete cleanly.")
             lines.append("")
 
+        # New: Clearly surface when the final summary was synthesized from agent checkpoints
+        # This is a direct win from the 0.3.0 resilience work + recent hardening.
+        if result.get("summary_synthesized_from_checkpoint"):
+            lines.append("## ♻️ Summary Synthesized from Agent Checkpoints")
+            lines.append("The inner agent did not emit the exact `=== DELEGATION SUMMARY ===` markers.")
+            lines.append("The harness performed best-effort recovery by combining whatever the model produced with the agent's own `PROGRESS.json` / `TASK_STATE.md` checkpoints (written during the run as instructed).")
+            lines.append("")
+            lines.append("**Review guidance**: Treat the recovered summary and observations as the primary source of truth for what was accomplished. The raw model output may be incomplete or scattered because the run was long or interrupted.")
+            lines.append("This recovery path is now an intentional, supported part of long-running delegation.")
+            lines.append("")
+
+            # Structured Recovery Sources (first-class in human reports; preview of key PROGRESS fields)
+            if result.get("observations") and "[Best-effort recovery from" in result.get("observations", ""):
+                lines.append("### Recovery Sources")
+                lines.append("Key fields recovered from the agent's PROGRESS.json / TASK_STATE.md (synthesized summary source of truth):")
+                # Try to show clean structured preview of common grooming-relevant keys
+                obs = result.get("observations", "")
+                # Best-effort: pull the JSON-ish content after the marker
+                start = obs.find("[Best-effort recovery from")
+                if start != -1:
+                    raw_ck = obs[start:start+900]
+                    # If it looks like it contains JSON, pretty-print the top level keys we care about
+                    try:
+                        # crude extraction of the dict after the marker line
+                        brace = raw_ck.find("{")
+                        if brace != -1:
+                            # take until last } we can find in the preview window
+                            end_brace = raw_ck.rfind("}")
+                            if end_brace > brace:
+                                candidate = raw_ck[brace:end_brace+1]
+                                ck = json.loads(candidate)
+                                if isinstance(ck, dict):
+                                    preview_keys = {k: ck[k] for k in ["completed", "current_phase", "next_steps", "gotchas", "open_issues", "validation_status", "cluster_evidence"] if k in ck}
+                                    if preview_keys:
+                                        lines.append("```json")
+                                        lines.append(json.dumps(preview_keys, indent=2)[:1400])
+                                        lines.append("```")
+                                        lines.append("")
+                    except Exception:
+                        pass
+                if not any("```json" in l for l in lines[-5:]):  # fallback if pretty failed
+                    lines.append("```")
+                    lines.append(raw_ck[:700] + ("..." if len(raw_ck) > 700 else ""))
+                    lines.append("```")
+                lines.append("")
+
         # Quick Review Checklist (high-signal for end-result review)
         if created or modified or deleted:
             lines.append("## Quick Review Checklist")
@@ -927,7 +1136,64 @@ def render_human_report(result: dict) -> str:
         change_summary = result.get("change_summary", "").strip()
         if change_summary:
             lines.append("## Change Summary")
+            # Special handling for grooming/normalization style runs (many small edits)
+            if "Grooming / normalization work" in change_summary or len(change_summary.split('\n')) > 10:
+                lines.append("*This appears to be a grooming/normalization-style run with many small, precise changes.*")
+                lines.append("*Recommendation: Review the grouped summary below first, then drill into specific files if needed.*")
+                lines.append("")
             lines.append(change_summary)
+            lines.append("")
+
+        # First-class Grooming / Normalization Notes (high-signal for vault/tag/hygiene work)
+        # Always surfaced for synthesized checkpoint recovery or long grooming-style change summaries.
+        # This is the direct response to "better notes from Honey" — richer, less heuristic, structured evidence.
+        grooming_notes = result.get("grooming_notes")
+        has_cluster = bool(result.get("cluster_evidence") or result.get("evidence") or result.get("decisions"))
+        is_grooming_run = result.get("summary_synthesized_from_checkpoint") or (change_summary and len(change_summary.split('\n')) > 6) or has_cluster
+        if is_grooming_run and (grooming_notes or has_cluster):
+            lines.append("## ♻️ Grooming / Normalization Notes")
+            lines.append("_Structured notes recovered from agent checkpoints (PROGRESS.json etc.). Primary source for vault hygiene review._")
+            lines.append("")
+            if grooming_notes:
+                lines.append(grooming_notes[:2200])
+                lines.append("")
+            # Surface rich cluster / evidence / decisions structures cleanly (enables precise, evidence-based feedback like Honey's v4 review)
+            for rich_name, rich_val in [
+                ("cluster_evidence", result.get("cluster_evidence")),
+                ("evidence", result.get("evidence")),
+                ("decisions", result.get("decisions")),
+                ("real_target_evidence", result.get("real_target_evidence")),
+            ]:
+                if rich_val:
+                    lines.append(f"**{rich_name.replace('_', ' ').title()}**:")
+                    if isinstance(rich_val, (dict, list)):
+                        try:
+                            lines.append("```json")
+                            lines.append(json.dumps(rich_val, indent=2)[:1200])
+                            lines.append("```")
+                        except Exception:
+                            lines.append(str(rich_val)[:800])
+                    else:
+                        lines.append(str(rich_val)[:800])
+                    lines.append("")
+            # Validation status / canonical rules if present (directly supports "validation pass vs production change" clarity)
+            if result.get("validation_status"):
+                lines.append(f"**Validation Status**: {result['validation_status']}")
+            if result.get("canonical_rules"):
+                cr = result["canonical_rules"]
+                lines.append(f"**Canonical Rules Applied**: {cr if isinstance(cr, str) else json.dumps(cr)[:300]}")
+            lines.append("")
+
+        # Optional Run Intent / Purpose section (helps reviewers understand validation-only vs. production intent, per Honey v4 clarification)
+        intent = None
+        if result.get("validation_status") or (result.get("status") == "partial_success" and not (created or modified or deleted)):
+            intent = "Validation / gate-checking pass (no changes expected or warranted if gates pass)"
+        elif "validation" in (result.get("summary", "") + str(grooming_notes or "")).lower():
+            intent = "Validation-focused run (honest PARTIAL or PASS only on real validated targets)"
+        if intent:
+            lines.append("## Run Intent")
+            lines.append(intent)
+            lines.append("**Review note**: STATUS reflects strict gates (e.g. only real, temp-snapshot-validated patches count toward PASS).")
             lines.append("")
 
         # Changes section with rich details
@@ -1011,6 +1277,9 @@ def render_human_report(result: dict) -> str:
         observations = result.get("observations")
         if observations:
             lines.append("## Observations / Key Findings")
+            if result.get("summary_synthesized_from_checkpoint"):
+                lines.append("_Note: The following includes structured state recovered from the agent's own checkpoints (PROGRESS.json etc.)._")
+                lines.append("")
             lines.append(observations)
             lines.append("")
 
@@ -1256,7 +1525,7 @@ def main():
             original_model = data.get("model", args.model)
             run_name = data.get("run_name")
 
-            if state in ("completed", "max_wait_exceeded"):
+            if state in ("completed", "failed", "completed_no_changes", "max_wait_exceeded"):
                 # Smart short-circuit: the run already finished. No need to re-wait.
                 elapsed = data.get("elapsed_seconds", "?")
                 ended = data.get("ended_at", "")
@@ -1309,6 +1578,8 @@ def main():
                     sm = StatusManager(resume_status_file) if resume_status_file else None
                     if sm and sm.load():
                         sm.heartbeat("resuming from crashed state")
+                        # Clean the sentinel now that we're successfully resuming — the run is no longer "crashed"
+                        sm._cleanup_crash_sentinel()
                 except Exception:
                     pass
 
@@ -1323,7 +1594,7 @@ def main():
                 run_name=run_name,
                 task=data.get("task") or original_prompt,
                 existing_status_file=resume_status_file,
-                quiet=quiet,
+                quiet=getattr(args, "quiet", False),
             )
 
             # Proceed with normal result processing below
@@ -1461,6 +1732,15 @@ def main():
     launch_status = status_manager.to_dict()
 
     status_manager.heartbeat("status file created, about to launch inner model")
+
+    # Defensive cleanup: remove any stale crash sentinel from a previous (crashed or interrupted) attempt
+    # on this same status file before we start a fresh run. Prevents false "crashed" promotion.
+    try:
+        stale_sentinel = launch_status_file.with_suffix(launch_status_file.suffix + ".crashed")
+        if stale_sentinel.exists():
+            stale_sentinel.unlink()
+    except Exception:
+        pass
 
     # Register crash protection so if this harness process dies (kill, OOM, terminal close, etc.)
     # we try to mark the run as crashed instead of leaving it in "launched"/"running" forever.

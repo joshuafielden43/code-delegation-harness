@@ -137,6 +137,8 @@ Key improvements:
 
 The parser looks for the `=== DELEGATION SUMMARY ===` block. Grok is now explicitly instructed to call out no-changes cases and surface errors clearly.
 
+**Note on long-running runs (0.3.0+):** If the inner agent omits the exact markers (common after very long or interrupted runs), the harness performs best-effort recovery using the agent's own `PROGRESS.json` checkpoints. The result will include `summary_synthesized_from_checkpoint: true` and the human report will contain a clear `♻️ Summary Synthesized from Agent Checkpoints` section with review guidance. This is a supported recovery path.
+
 Example of the human review report (what you actually read for the end result):
 
 ```markdown
