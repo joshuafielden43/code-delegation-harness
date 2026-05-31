@@ -1562,6 +1562,7 @@ def main():
         _VERSION = "0.2.1"
 
     parser = argparse.ArgumentParser(description="Delegate coding work to Grok")
+    parser.add_argument("task_positional", nargs="?", help="The coding task to perform (alternative to --task)")
     parser.add_argument("--task", help="The coding task to perform")
     parser.add_argument("--target-dir", help="Working directory for the task")
     parser.add_argument("--context", help="Additional context for the task")
@@ -1587,6 +1588,10 @@ def main():
     parser.add_argument("--version", action="version", version=f"code-delegation-harness {_VERSION}")
 
     args = parser.parse_args()
+
+    # Resolve task from either --task or the positional (for ergonomic launch patterns like "gcdh ask '...'")
+    if not getattr(args, "task", None) and getattr(args, "task_positional", None):
+        args.task = args.task_positional
 
     # --- Detach / daemon mode handling (early, before any heavy work) ---
     if args.detach:
@@ -1678,12 +1683,13 @@ def main():
         task_lower = (args.task or "").lower()
         serious_keywords = ["full", "skill extension", "production-grade", "proxmox", "guest-exec", "end-to-end", "ambitious", "dogfood", "complete implementation", "working code", "reviewable", "implementation", "production"]
         if any(kw in task_lower for kw in serious_keywords) or (args.output_file and len((args.task or "")) > 80):
-            print("[cdh] ⚠️  SERIOUS TASK DETECTED")
+            print("[cdh] ⚠️  SERIOUS TASK DETECTED — THIS IS THE PRIMARY USE CASE FOR THE HARNESS")
             print("[cdh] You are running what looks like a real, ambitious, long-running implementation or dogfood job.")
-            print("[cdh] You should be using --long-running (or --keep-driving) on almost all such runs.")
-            print("[cdh] Without it you are much more likely to hit early timeouts, stale data problems, and incomplete work.")
-            print("[cdh] Recommended: gcdh --long-running --wait-for-completion --max-wait 14400 --output-file ...")
-            print("[cdh] This is the standard way to run serious dogfood. Not using it is usually a mistake.")
+            print("[cdh] The recommended and supported way to run this kind of work is:")
+            print("[cdh]   gcdh --long-running --wait-for-completion --max-wait 86400 --output-file ...")
+            print("[cdh]   (or ./scripts/gcdh-tmux ... for maximum survival in hostile environments like this TUI)")
+            print("[cdh] Without --long-running you are much more likely to hit early deaths, stale data, and incomplete results.")
+            print("[cdh] Long-running mode + safe isolated workspace + auto-reap is the standard pattern for serious self-dogfooding.")
 
     # Hostile launcher escape (TUI / grok wrapper / 300s SIGTERM environments)
     # This is the direct response to "even with --long-running the outer wrapper killed the job".
@@ -1751,6 +1757,42 @@ def main():
     # Guard against None for any code paths that still assume these are set
     if not is_standalone and (not args.task or not args.target_dir):
         sys.exit(1)
+
+    # === EARLY LAUNCH RECORD (critical for dogfood observability) ===
+    # Create a minimal status file as early as possible so that even if the run dies
+    # during prompt construction, auto-reap, or other pre-launch steps, we have a record.
+    # This directly addresses "died on start with no status file" failures.
+    early_launch_status_file = None
+    if not is_standalone:
+        try:
+            early_launch_run_id = str(uuid.uuid4())[:8]
+            early_launch_status_file = Path(target_dir) / f".cdh-run-{early_launch_run_id}.status"
+            StatusManager.create_new(
+                early_launch_run_id,
+                args.run_name,
+                args.task,
+                target_dir,
+                args.model,
+                state="launching",
+                prompt=None,   # will be filled in the real creation below
+                context=args.context,
+                constraints=args.constraints,
+            )
+            # Store the original command line for forensics on very early failures
+            try:
+                sm_early = StatusManager(early_launch_status_file)
+                if sm_early.load(require_owner_and_secure=False):
+                    sm_early._data["invocation"] = " ".join(shlex.quote(a) for a in sys.argv)
+                    sm_early._atomic_write()
+            except Exception:
+                pass
+
+            # Note: we intentionally do not yet register crash protection here.
+            # The full registration happens after the real status file is created.
+        except Exception as early_err:
+            # Never let early status recording kill the launch
+            if verbosity >= 1:
+                print(f"[cdh] Warning: Could not create early launch record: {early_err}")
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -2003,18 +2045,34 @@ def main():
         long_running=getattr(args, "long_running", False),
     )
 
-    # Always create a launch status file for full observability and production reliability.
-    # Store the full prompt (plus context) so --resume can faithfully continue the original work.
-    launch_run_id = str(uuid.uuid4())[:8]
-    launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
-    status_manager = StatusManager.create_new(
-        launch_run_id,
-        args.run_name,
-        args.task,
-        target_dir,
-        args.model,
-        state="launched",
-        prompt=prompt,
+    # Always create (or enrich) a launch status file for full observability and production reliability.
+    # If we already created an early one above, reuse its run_id so we don't leave orphans.
+    if early_launch_status_file and early_launch_status_file.exists():
+        launch_status_file = early_launch_status_file
+        # Re-create / enrich with full details now that we have the prompt
+        launch_run_id = launch_status_file.stem.replace(".cdh-run-", "")
+        status_manager = StatusManager.create_new(
+            launch_run_id,
+            args.run_name,
+            args.task,
+            target_dir,
+            args.model,
+            state="launched",
+            prompt=prompt,
+            context=args.context,
+            constraints=args.constraints,
+        )
+    else:
+        launch_run_id = str(uuid.uuid4())[:8]
+        launch_status_file = Path(target_dir) / f".cdh-run-{launch_run_id}.status"
+        status_manager = StatusManager.create_new(
+            launch_run_id,
+            args.run_name,
+            args.task,
+            target_dir,
+            args.model,
+            state="launched",
+            prompt=prompt,
         context=args.context,
         constraints=args.constraints,
     )
