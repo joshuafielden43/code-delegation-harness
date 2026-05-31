@@ -10,6 +10,7 @@ Designed to keep the primary persona clean while getting real implementation
 work done reliably.
 """
 
+from __future__ import annotations
 import argparse
 import json
 import os
