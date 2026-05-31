@@ -99,6 +99,36 @@ bin/gcdh \
 
 **For ambitious multi-hour implementation (e.g. full Proxmox skill extensions with guest-exec, resize, discovery fixes, tests, promotion — the primary dogfood target):**
 
+### The Full "Worth Checking In" Recipe for Serious Work (especially from inside constrained environments like this TUI)
+
+When you are inside a short-timeout wrapper (the Grok Build TUI, grok CLI sessions, CI with hard kill timers, etc.) and you need a real LLM to do hours of ambitious implementation without the job dying and leaving partial broken state in the live target:
+
+1. **Always** use `--long-running` (or `--keep-driving`).
+2. Pair it with `--wait-for-completion --max-wait 86400 --output-file ... --run-name "something-good"`.
+3. When launched from a hostile short wrapper, the harness now **auto-detects** and **auto-escapes** the entire invocation into a detached tmux session (sets `GCDH_IN_TMUX` guard). The short-lived parent process exits cleanly so the outer 300s SIG15 cannot kill the real work. You (or the agent) attach later with `tmux attach -t <session>` or just let it cook and use `--status` / `--resume`.
+4. The harness also **auto-reaps** any dead prior runs (using heartbeat + PID probe) at the start of every new `--long-running` launch. Combined with the strict safe live-target mutation rule, this means previous crashes cannot leave the real skill/infra in a half-edited untestable state.
+5. The prompt now forces (as non-negotiable first action): create an isolated working copy of the live target inside the harness `--target-dir`. All edits happen there. Only a complete, tested, reviewable promotion ever touches the real location.
+
+Example that triggers the full power (auto-escape + auto-reap + safe workspace + ruthless drive):
+
+```bash
+gcdh --long-running \
+  --wait-for-completion \
+  --max-wait 86400 \
+  --output-file /tmp/proxmox-appliance-$(date +%s).json \
+  --run-name "proxmox-guest-exec-resize-full" \
+  --quiet \
+  --task "..." \
+  --target-dir /tmp/real-work-for-this-run \
+  --context "..." 
+```
+
+If you are already inside the TUI when you run the above, the harness will print that it is auto-escaping into tmux and do it. The job survives even if this TUI session is killed.
+
+This combination is what makes the harness actually capable of letting a strong LLM finish the fucking job without constant outer babysitting or manual repair passes on the target.
+
+Use this pattern for anything that matters. The harness is now built to make check-in / check-out sessions on real ambitious work actually worth it.
+
 ```bash
 bin/gcdh \
   --task "..." \

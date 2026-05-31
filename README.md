@@ -75,9 +75,27 @@ export PATH="$PWD/bin:$PATH"
 gcdh --help
 gcdh --quiet --long-running --task "..." --target-dir /path/to/project --output-file result.json
 
-# For any real ambitious or long-running dogfood work (skill extensions, full features, Proxmox-style work, etc.),
-# you should almost always use --long-running (or --keep-driving). It enables the ruthless completion bias,
-# dynamic fresh verification, and proper resource bumps so runs actually finish instead of dying early.
+# For any real ambitious or long-running dogfood / implementation work (the primary use case),
+# use the full modern pattern. From constrained environments (this TUI, short CI wrappers, etc.)
+# the harness will auto-escape into tmux and auto-reap prior dead runs so the job survives
+# and the live target is never left in a partial broken state.
+
+# Easiest one-command launcher (recommended):
+#   ./scripts/gcdh-tmux --long-running --wait-for-completion --max-wait 86400 \
+#       --output-file /tmp/run.json --run-name "my-work" \
+#       --task "..." --target-dir /tmp/work
+
+# Or direct (auto-escape triggers automatically for --long-running in hostile launchers):
+gcdh --long-running --wait-for-completion --max-wait 86400 \
+     --output-file /tmp/run.json --run-name "my-work" --quiet \
+     --task "..." --target-dir /tmp/work
+
+# The harness now bakes in:
+# - Ruthless "job to the end + mandatory fresh verification (no stale data)" language
+# - Dynamic PROGRESS.json injection on every background probe
+# - Auto tmux escape from short-timeout outer wrappers (TUI 300s SIG15 etc.)
+# - Auto-reap of dead prior runs on every long launch (prevents leaving broken live state)
+# - Strict safe isolated workspace rule (never mutate live target until final promotion)
 ```
 
 **Installation**

@@ -16,6 +16,7 @@ Hard constraints (non-negotiable)
 - Always respect the existing safety model (`allowed_actions`, `dangerous_actions_enabled`, dry-run/apply, `--confirm`, etc.).
 - Start with `--dry-run`. Only use `--apply` after the dry-run plan has been reviewed and looks correct.
 - Keep test containers small, clearly named (e.g. `honey-test-xxx` or `nuc-test-xxx`), and clean them up unless explicitly told otherwise.
+- Use the full modern launch pattern (./scripts/gcdh-tmux or direct --long-running --wait-for-completion --max-wait 86400 + --output-file). Harness auto-escapes to tmux in hostile environments and auto-reaps dead prior runs. Create isolated working copy of the skill in your target_dir as absolute first action — live ~/.hermes/skills/... is read-only until final atomic promotion of complete tested work.
 - Treat the live hardware with respect. If anything feels risky or unclear, stop and ask for human guidance via the Dialogue.
 
 Supporting Reference Materials (read these first)

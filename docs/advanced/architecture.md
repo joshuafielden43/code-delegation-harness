@@ -58,6 +58,7 @@ See [output-artifacts.md](../usage/output-artifacts.md) for the detailed schema.
 - **Strong working directory discipline**: The harness is obsessive about making sure the inner model only operates inside the exact directory the user specified.
 - **Reviewability first**: Every run should produce artifacts that a human (or another agent) can quickly evaluate without re-running the entire task.
 - **Lightweight and recoverable**: Background and long-running support is a first-class concern. The StatusManager + recovery logic exists specifically for this.
+- New (0.3.x+): Auto tmux escape from hostile short-timeout launchers (TUI, CI wrappers) when --long-running or --tmux is used. Auto-reap of dead prior runs on every serious launch. Strict safe isolated workspace + promotion-only mutation discipline enforced in prompts to guarantee no partial broken state is ever left in live dogfood targets.
 
 ## Data Flow (Simplified)
 

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Significant worktree cleanup and improved tracking of active dogfood prompts and the single source of truth transcript.
 - Ongoing maintenance of the `MEETING_OF_MODELS_TRANSCRIPT.md` with current dogfood status to keep the authoritative record up to date.
 
+### Launcher Escape & Broken-Artifact Prevention (direct response to outer 300s SIG15 + manual repair incident)
+- Added **SAFE LIVE-TARGET MUTATION DISCIPLINE** (ruthless new section in the core `build_grok_prompt` + mirrored into the Proxmox appliance provisioning dogfood prompt). Live locations (real skill trees, infra control planes) are now *structurally* read-only for development. The harness contract is explicit: all work happens in an isolated copy inside the harness target_dir; the *only* allowed mutation to the live target is a single final atomic promotion of a complete, tested, reviewable patch set. A killed run must leave the live dogfood target byte-identical to launch state. This directly prevents the recurring failure where a harness death left partial guest-exec classification, wrong LXC exec paths (pct vs pvesh), and broken state in `~/.hermes/skills/proxmox-control/` that required an "outer Honey repair pass" before the next run could even smoke-test.
+- Automatic **HOSTILE LAUNCHER ESCAPE** recipe printed for every `--long-running` serious task when launched from inside short-timeout wrappers (the Grok Build TUI, grok CLI contexts, CI with hard 300s kills, etc.). Detects the environment and emits a ready-to-paste `tmux new-session -d ...` one-liner that survives the outer SIG15 wrapper + the exact safe-mutation reminder. This is the concrete product answer to "I'm making you ride a harness so that an actual LLM that can do the fucking job can be used."
+- These two changes together close the loop on the "harness dies → partial live edits → human has to fix the target by hand" pattern observed in the most recent Proxmox appliance provisioning dogfood run. Future long-running runs on real targets are now structurally prevented from leaving the kind of mess that forces outer intervention.
+
 ## [0.3.1] - 2026-05-30
 
 **Patch release: Post-0.3.0 hardening + grooming / normalization notes improvements.**

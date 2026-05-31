@@ -47,6 +47,17 @@ By design, `--detach` redirects all harness stdout/stderr to `/dev/null`. The on
 
 **Always** use `--output-file` with `--detach`. For production servers, prefer a systemd unit (which can capture logs and supervise) over raw `--detach`.
 
+### Outer wrapper / TUI / CI kills the harness even with --long-running (300s SIG15 etc.)
+
+Many agent environments (including the Grok Build TUI) wrap the process with hard timeouts.
+
+**Solution (built into the harness since 0.3.x):**
+- Launch with `--long-running`. The harness detects hostile short-timeout contexts and **auto-escapes** the job into a detached tmux session. The short-lived parent exits cleanly.
+- Or use the dedicated one-command helper: `./scripts/gcdh-tmux [your full flags]`
+- The job now survives the outer kill. Attach later with `tmux attach -t <session>` or monitor with `gcdh --status`.
+
+See the new "Escaping Hostile Short-Timeout Launchers" section in the runbook for details and the full recommended pattern (auto-escape + auto-reap of dead prior runs + strict safe isolated workspace so no partial broken state is ever left in live targets).
+
 ## Getting Help
 
 - Check the [CLI Reference](usage/cli-reference.md)

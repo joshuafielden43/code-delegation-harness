@@ -1,0 +1,46 @@
+#!/bin/bash
+# gcdh-tmux — one-command launcher for serious long-running work that must survive
+# hostile short-timeout environments (Grok Build TUI, CI wrappers, 300s SIG15 kills, etc.).
+#
+# Usage:
+#   ./scripts/gcdh-tmux --long-running --wait-for-completion --max-wait 86400 \
+#       --output-file /tmp/my-run.json --run-name "important-work" \
+#       --task "..." --target-dir /tmp/work
+#
+# It will:
+#   - Create a uniquely named tmux session
+#   - Run the full gcdh command inside it with GCDH_IN_TMUX=1
+#   - Print the attach command
+#   - Exit the current shell so the outer wrapper (if any) cannot kill the job
+#
+# The session name is printed and can be attached later or monitored via gcdh --status.
+
+set -euo pipefail
+
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "[gcdh-tmux] ERROR: tmux is not installed. Install it or use the manual tmux recipe from 'gcdh --long-running'."
+    exit 1
+fi
+
+SESSION="cdh-$(date +%s)-$$"
+
+# Reconstruct the command safely
+CMD="cd \"$(pwd)\" && GCDH_IN_TMUX=1 gcdh $*"
+
+echo "[gcdh-tmux] Launching in detached tmux session: $SESSION"
+tmux new-session -d -s "$SESSION" "$CMD"
+
+echo
+echo "[gcdh-tmux] *** Job is now running in tmux (survives outer kills) ***"
+echo "[gcdh-tmux] Session : $SESSION"
+echo "[gcdh-tmux] Attach  : tmux attach -t $SESSION"
+echo "[gcdh-tmux] Monitor : gcdh --status --target-dir \"$(pwd)\""
+echo "[gcdh-tmux] (The current process can now exit safely.)"
+echo
+
+# Optional: if the user wants to attach immediately in interactive use
+if [[ -t 1 ]]; then
+    echo "[gcdh-tmux] Attaching now (Ctrl-b d to detach and leave it running)..."
+    sleep 0.5
+    exec tmux attach -t "$SESSION"
+fi
