@@ -193,12 +193,11 @@ class TestCheckpointLoading(unittest.TestCase):
 
     def test_load_checkpoint_context_handles_malformed_but_falls_back(self):
         with tempfile.TemporaryDirectory() as td:
-            # Non-json but small: should still wrap (content is just text)
+            # Non-json checkpoints should be skipped to avoid prompt contamination.
             p = Path(td) / "TASK_STATE.md"
             p.write_text("not json but valid text checkpoint")
             ctx = load_checkpoint_context(td)
-            self.assertIn("BEGIN UNTRUSTED CHECKPOINT", ctx)
-            self.assertIn("not json but valid text checkpoint", ctx)
+            self.assertEqual(ctx, "")
 
 
 class TestReapAndStatusDeadDetection(unittest.TestCase):
@@ -317,7 +316,7 @@ class TestLongRunningHardening(unittest.TestCase):
     def test_build_grok_prompt_contains_ruthless_long_running_language(self):
         from code_delegation_harness.harness import build_grok_prompt
         p = build_grok_prompt(
-            task="Extend the proxmox-control skill with guest-exec and resize helpers on live hardware",
+            task="Extend the sample skill with lifecycle helpers and validation",
             target_dir="/tmp/fake-target",
             long_running=True,
         )
@@ -359,7 +358,7 @@ class TestLongRunningHardening(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "PROGRESS.json"
-            p.write_text(json.dumps({"completed": ["phase1"], "current_plan": ["phase2 guest-exec"]}))
+            p.write_text(json.dumps({"completed": ["phase1"], "current_plan": ["phase2 validation"]}))
             ctx = load_checkpoint_context(td)
             self.assertIn("BEGIN UNTRUSTED CHECKPOINT", ctx)
             self.assertIn("fresh verification of the current state", ctx)  # existing strong text
@@ -389,8 +388,8 @@ class TestLongRunningHardening(unittest.TestCase):
             p = Path(td) / "PROGRESS.json"
             p.write_text(json.dumps({
                 "phase": "implementation",
-                "completed": ["guest-exec skeleton"],
-                "current_plan": ["implement resize + live tests on proxmox01"]
+                "completed": ["helper skeleton"],
+                "current_plan": ["finish validation + integration tests"]
             }, indent=2))
 
             out2 = _augment_prompt_with_fresh_checkpoint(base, td, quiet=True)
@@ -400,7 +399,7 @@ class TestLongRunningHardening(unittest.TestCase):
             self.assertIn("drive the *next remaining concrete steps* from the plan", out2)
             self.assertIn("collective completion of the full task (implementation + tests + promotion)", out2)
             self.assertIn("BEGIN UNTRUSTED CHECKPOINT", out2)
-            self.assertIn("phase1" if False else "guest-exec skeleton", out2)  # the checkpoint content
+            self.assertIn("helper skeleton", out2)  # the checkpoint content
             # Ensure it did not duplicate the entire base unnecessarily
             self.assertEqual(out2.count("ORIGINAL PROMPT"), 1)
 
@@ -420,7 +419,7 @@ class TestLongRunningHardening(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             # Create a checkpoint so augmentation produces the FRESH block
             p = Path(td) / "PROGRESS.json"
-            p.write_text(json.dumps({"completed": ["phaseA"], "current_plan": ["finish resize"]}))
+            p.write_text(json.dumps({"completed": ["phaseA"], "current_plan": ["finish validation"]}))
 
             # Mock call_model_headless: first call (immediate probe) returns a completed result
             # (non-timed_out) so we short-circuit successfully.
