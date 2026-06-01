@@ -462,7 +462,13 @@ def _augment_prompt_with_fresh_checkpoint(base_prompt: str, cwd: str, quiet: boo
 
 
 def _write_prompt_audit(target_dir: str, run_id: str, label: str, prompt: str, provenance: Optional[dict] = None) -> Optional[Path]:
-    """Persist the exact prompt sent to the model plus lightweight source provenance."""
+    """Persist the exact prompt sent to the model plus lightweight source provenance.
+
+    This is a first-class artifact for long-running reliability and future
+    prompt-architecture work (e.g. structured pass-2 inversion, four-axis IR).
+    Also maintains a per-run ordered manifest.json so the full prompt history
+    for any background run can be reconstructed without scanning.
+    """
     try:
         audit_dir = Path(target_dir) / ".cdh-prompts"
         audit_dir.mkdir(mode=0o700, exist_ok=True)
@@ -482,8 +488,32 @@ def _write_prompt_audit(target_dir: str, run_id: str, label: str, prompt: str, p
             meta["provenance"] = provenance
         meta_path.write_text(json.dumps(meta, indent=2))
         meta_path.chmod(0o600)
+
+        # Maintain a simple ordered manifest for the entire run (key for long-running
+        # probe visibility and future deterministic prompt patching).
+        # This makes it trivial to reconstruct the full prompt history later.
+        manifest_path = audit_dir / f"{run_id}.manifest.json"
+        manifest = []
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                manifest = []
+
+        manifest.append({
+            "label": label,
+            "prompt_file": str(prompt_path),
+            "meta_file": str(meta_path),
+            "timestamp": meta["timestamp"],
+            "chars": len(prompt),
+        })
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path.chmod(0o600)
+
+        # Auditing must never kill a long-running run.
         return prompt_path
     except Exception:
+        # Swallow everything; the caller (probe loop, launch, etc.) must continue.
         return None
 
 
@@ -553,6 +583,31 @@ def _wait_for_background_completion(
     # (60s or 180s under --long-running) before the first anti-stale-driven incremental step.
     # Subsequent polls use the normal sleep-then-probe cycle.
     first_working = _augment_prompt_with_fresh_checkpoint(prompt, cwd, quiet=quiet)
+
+    # Audit the prompt used for the immediate first probe (critical for long-running visibility
+    # and future pass-2 / Prompt IR work). Do this *before* the call so the artifact exists
+    # even if the probe itself completes the run or raises.
+    try:
+        first_audit = _write_prompt_audit(
+            cwd,
+            run_id,
+            "probe-001",
+            first_working,
+            {"probe_type": "immediate_first", "reason": "post-launch or post-resume first continuation"},
+        )
+        if first_audit:
+            status_manager.record_prompt_audit(
+                "probe-001",
+                str(first_audit),
+                str(Path(cwd) / ".cdh-prompts" / f"{run_id}.probe-001.json"),
+            )
+            status_manager.set_prompt_audit_dir(str(Path(cwd) / ".cdh-prompts"))
+    except Exception:
+        # Auditing must never kill a long-running run.
+        pass
+
+    probe_count = 1  # We already audited the immediate first probe (probe-001)
+
     try:
         first_result = call_model_headless(first_working, cwd=cwd, model=model, timeout=probe_timeout, max_turns=max_turns)
         if not first_result.get("timed_out"):
@@ -611,6 +666,34 @@ def _wait_for_background_completion(
         # reliable without trusting stale identifiers, paths, or state.
         # Uses the new extracted _augment_prompt_with_fresh_checkpoint helper (directly testable).
         working_prompt = _augment_prompt_with_fresh_checkpoint(prompt, cwd, quiet=quiet)
+
+        # Audit every probe prompt. This is critical for long-running visibility and
+        # future prompt-architecture work (e.g. understanding exactly what was sent
+        # during degraded runs that triggered auto-remediation, or for deterministic
+        # reconstruction of a long background task's full model interaction history).
+        probe_count += 1
+        try:
+            probe_audit = _write_prompt_audit(
+                cwd,
+                run_id,
+                f"probe-{probe_count:03d}",
+                working_prompt,
+                {
+                    "probe_type": "periodic",
+                    "elapsed_seconds": int(elapsed),
+                    "poll_interval": poll_interval,
+                },
+            )
+            if probe_audit:
+                status_manager.record_prompt_audit(
+                    f"probe-{probe_count:03d}",
+                    str(probe_audit),
+                    str(Path(cwd) / ".cdh-prompts" / f"{run_id}.probe-{probe_count:03d}.json"),
+                )
+                status_manager.set_prompt_audit_dir(str(Path(cwd) / ".cdh-prompts"))
+        except Exception:
+            # Auditing must never kill a long-running run.
+            pass
 
         # Resilient polling with RetryPolicy (lightweight, no heavy deps).
         # Transient CLI / subprocess hiccups during long background waits should not abort the harness.
@@ -1107,6 +1190,15 @@ def _extract_weakness_profile(clean_result: dict, target_dir: str, model: str, t
             "Each weakness item must contain: issue, evidence, impact, target_prompt_section.\n"
             "Do not add fields or prose.\n\n"
             f"INPUT_JSON:\n{json.dumps(clean_result, indent=2)[:12000]}\n"
+        )
+        # Audit the (small) inference prompt used for weakness prioritization / auto-remediation.
+        # Uses synthetic run_id so it lands in .cdh-prompts/ as a reusable cross-run artifact.
+        _write_prompt_audit(
+            target_dir,
+            "weakness-inference",
+            "weakness-inference",
+            inference_prompt,
+            {"purpose": "auto-remediation weakness ranking"},
         )
         inference = call_model_headless(
             inference_prompt,
@@ -2331,7 +2423,9 @@ def main():
             print(f"Active / in-progress delegate runs in {target_dir}:")
             for e in active:
                 state_label = e.get("state", "active")
-                print(f"  {e['file']} | {state_label} | {e['name']} | {e['elapsed']}s | started {e['started']} | {e['task']}...")
+                audits = data.get("prompt_audits") or []
+                audit_note = f" | audits:{len(audits)}" if audits else ""
+                print(f"  {e['file']} | {state_label} | {e['name']} | {e['elapsed']}s | started {e['started']} | {e['task']}...{audit_note}")
             print()
 
         if completed:
@@ -2465,6 +2559,17 @@ def main():
     )
     if prompt_audit:
         status_manager.update(prompt_file=str(prompt_audit))
+        # Also record into the rich audit trail (for --status visibility + manifest already written by _write)
+        try:
+            audit_dir = str(Path(target_dir) / ".cdh-prompts")
+            status_manager.set_prompt_audit_dir(audit_dir)
+            status_manager.record_prompt_audit(
+                "pass1",
+                str(prompt_audit),
+                str(Path(target_dir) / ".cdh-prompts" / f"{launch_run_id}.pass1.json"),
+            )
+        except Exception:
+            pass  # never break launch on audit surface
 
     status_manager.heartbeat("status file created, about to launch inner model")
 
@@ -2588,6 +2693,20 @@ def main():
             if audit_pass2:
                 clean_result.setdefault("metadata", {})
                 clean_result["metadata"]["remediation_prompt_audit_file"] = str(audit_pass2)
+                # Surface in status for operational visibility (long-running + auto-remediation)
+                try:
+                    audit_dir = str(Path(target_dir) / ".cdh-prompts")
+                    # Load fresh to avoid any scope/rebinding issues in the post-wait flow
+                    sm = StatusManager(launch_status_file) if 'launch_status_file' in dir() else None
+                    if sm and sm.load():
+                        sm.set_prompt_audit_dir(audit_dir)
+                        sm.record_prompt_audit(
+                            "pass2-remediation",
+                            str(audit_pass2),
+                            str(Path(target_dir) / ".cdh-prompts" / f"{launch_run_id}.pass2-remediation.json"),
+                        )
+                except Exception:
+                    pass
 
             retry = RetryPolicy(max_attempts=3, base_delay=1.5)
             ok, remediation_outcome = retry.run(

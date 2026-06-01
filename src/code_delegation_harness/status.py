@@ -362,6 +362,49 @@ class StatusManager:
     def run_id(self) -> str:
         return self._data.get("run_id", "")
 
+    # --- Prompt audit trail surface (stabilization for long-running visibility + future Prompt IR) ---
+    # These make every model prompt (especially long-running probes) a first-class durable
+    # artifact observable via the .status file without extra fs walks. 0600 atomic via _atomic_write.
+
+    def set_prompt_audit_dir(self, audit_dir: str) -> None:
+        """Record the directory containing prompt audit artifacts for this run."""
+        self._data["prompt_audit_dir"] = audit_dir
+        self._atomic_write()
+
+    def record_prompt_audit(self, label: str, prompt_file: str, meta_file: str) -> None:
+        """Append a single prompt audit entry to the status for quick visibility.
+        Keeps only the last 50 entries for sanity on very long-running runs.
+        Never lets audit recording kill the harness.
+        """
+        try:
+            audits = self._data.setdefault("prompt_audits", [])
+            audits.append({
+                "label": label,
+                "prompt_file": prompt_file,
+                "meta_file": meta_file,
+                "timestamp": datetime.now().isoformat(),
+            })
+            if len(audits) > 50:
+                self._data["prompt_audits"] = audits[-50:]
+            self._atomic_write()
+        except Exception:
+            # Best effort — auditing must never break long-running resilience
+            pass
+
+    def get_prompt_audit_trail(self) -> list[dict]:
+        """Return the list of prompt audits recorded for this run (from status)."""
+        return self._data.get("prompt_audits", [])
+
+    @property
+    def prompt_audit_dir(self) -> Optional[str]:
+        """Return the directory containing prompt audit artifacts for this run, if set."""
+        return self._data.get("prompt_audit_dir")
+
+    def get_latest_prompt_audit(self) -> Optional[dict]:
+        """Return the most recent prompt audit entry, if any."""
+        audits = self._data.get("prompt_audits", [])
+        return audits[-1] if audits else None
+
 
 # --- Module-level crash protection support (used by harness launcher) ---
 # Kept here for better encapsulation with the rest of the status machinery.
