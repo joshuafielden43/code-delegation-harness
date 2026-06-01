@@ -326,7 +326,7 @@ class TestLongRunningHardening(unittest.TestCase):
         self.assertIn("BINARY COMPLETION METRIC (NO PARTIAL CREDIT", p)
         self.assertIn("NEVER EMIT THE SUMMARY MARKERS WHILE WORK REMAINS", p)
         self.assertIn("ANTI-STALE DATA — MANDATORY FRESH VERIFICATION ON *EVERY SINGLE INVOCATION*", p)
-        self.assertIn("cross-check *every* ID, filename, VMID", p)  # e.g. never trust deleted VM140
+        self.assertIn("cross-check *every* referenced identifier, path, state", p)
         self.assertIn("RELENTLESS INCREMENTAL DRIVE + \"KEEP DRIVING UNTIL DONE\" BEHAVIOR", p)
         self.assertIn("LONG-RUNNING / KEEP-DRIVING MODE (WHEN LAUNCHED WITH --long-running", p)
         self.assertIn("fresh_verification_deltas", p)

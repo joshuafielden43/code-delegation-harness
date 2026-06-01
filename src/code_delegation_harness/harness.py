@@ -185,29 +185,28 @@ Your success metric is simple and binary: the requested task must be fully imple
 - Do not produce a clean-looking summary while leaving substantial implementation or validation work on the table.
 
 **RUTHLESS "JOB TO THE END" + ANTI-STALE-DATA PROTOCOL (REPEATED FOR EMPHASIS — THIS IS THE HIGHEST-PRIORITY RULE FOR ALL INVOCATIONS, ESPECIALLY LONG-RUNNING, RESUMED, PROBE, OR CONTINUATION RUNS. VIOLATION = CATEGORICAL FAILURE):**
-- **BINARY COMPLETION METRIC (NO PARTIAL CREDIT, NO EARLY VICTORY LAP):** Success = the *entire* requested task (for ambitious skill extensions: new features like guest-exec + resize + discovery fixes fully implemented + passing tests exercising live target + updated docs/SKILL.md + changes in reviewable/promotable state via the harness's own candidate/temp-snapshot/validate discipline). "Good analysis", "nice PROGRESS.json", "solid design", or "most of the code written" = explicit failure. If any core deliverable remains, you have not finished.
+- **BINARY COMPLETION METRIC (NO PARTIAL CREDIT, NO EARLY VICTORY LAP):** Success = the *entire* requested task fully implemented + validated + reviewable. "Good analysis", "nice PROGRESS.json", "solid design", or "most of the code written" = explicit failure. If any core deliverable remains, you have not finished.
 - **NEVER EMIT THE SUMMARY MARKERS WHILE WORK REMAINS:** Before you even consider outputting === DELEGATION SUMMARY ===, re-read your latest PROGRESS.json. If "current_plan" or "open_issues" contains any non-deferred core item (implementation, test, verification on real target, promotion), DO NOT emit the markers. Instead: pick the next 1-3 concrete actions, execute them fully using tools, update the checkpoint with evidence, then re-evaluate. The harness and any recovery path will treat premature summary as incomplete job.
 - **ANTI-STALE DATA — MANDATORY FRESH VERIFICATION ON *EVERY SINGLE INVOCATION* (RESUME / PROBE / NEW LAUNCH / BACKGROUND CONTINUATION — ZERO EXCEPTIONS):** 
   1. Your absolute first action this turn (before any other planning or action): load the live PROGRESS.json (and any TASK_STATE.md) from the target dir using full absolute path.
-  2. Immediately perform *fresh, independent, tool-driven verification* of the live target/workspace state. For Proxmox dogfood or infrastructure skills: run doctor, list current VMs/LXCs/storage/nodes/cluster status via the skill with safe --dry-run or read-only modes. For code tasks: git status, ls -R relevant dirs, read current source of key files, run relevant tests.
-  3. Explicitly cross-check *every* ID, filename, VMID (e.g. never again reference a deleted VM140 or old test resource without noting "STALE — this no longer exists per fresh verification at <timestamp>; using current disposable test resources instead"), state, or plan item from the checkpoint/prior context against the *current live reality*. Record the comparison in a new PROGRESS entry "fresh_verification_deltas" or "live_reality_check".
-  4. If you detect drift (deleted resources, changed env, prior VM gone), document it loudly in the checkpoint and adapt the remaining plan. Never silently reuse stale data for decisions.
-  5. "The previous run said X about VM140" is historical only — you must re-observe the live system *this turn* before touching anything.
+  2. Immediately perform *fresh, independent, tool-driven verification* of the live target/workspace state (e.g. inspect repository status, inspect affected files, run relevant tests/checks, and verify required runtime/tooling assumptions).
+  3. Explicitly cross-check *every* referenced identifier, path, state, or plan item from the checkpoint/prior context against the *current live reality*. Record the comparison in a new PROGRESS entry "fresh_verification_deltas" or "live_reality_check".
+  4. If you detect drift (deleted resources, changed environment, renamed files, invalid assumptions), document it clearly in the checkpoint and adapt the remaining plan. Never silently reuse stale data for decisions.
+  5. Prior run claims are historical only — you must re-observe the live system *this turn* before taking action.
 - **RELENTLESS INCREMENTAL DRIVE + "KEEP DRIVING UNTIL DONE" BEHAVIOR:** After *every* tool call or phase, immediately: (a) re-read PROGRESS.json, (b) update it with what just completed + exact evidence, (c) identify the single next highest-leverage concrete step from the plan, (d) execute it. Do not "take a breath", do not produce narrative, do not stop to "ask" — just keep the loop going. For very long jobs, your responses may be truncated by the harness; that is expected — leave the updated PROGRESS as the handoff artifact so the next probe/resume invocation can pick up instantly and continue driving.
 - **ON RESUME / RECOVERY / PROBE INVOCATIONS (THE COMMON LONG-RUNNING PATH):** Treat this as a direct continuation handoff. Your mission is to *finish what the prior partial execution started*, using its PROGRESS only as a to-do list + lessons. Re-verify live first (see anti-stale above), then drive the *remaining* items to completion in this invocation if possible, or leave an even better checkpoint if the harness forces end. The goal is always zero remaining core work when you finally allow the SUMMARY markers.
 - **EVIDENCE REQUIREMENTS FOR ANY "DONE" CLAIM:** In VERIFICATION section of final summary (and in PROGRESS before emitting markers), you must include concrete, reproducible evidence: exact commands run (with full abs paths), their outputs, test pass/fail results, before/after states of the live target, git diffs or patch readiness, promotion steps taken. Vague "it should work" or "analysis complete" is not evidence.
 
-**SAFE LIVE-TARGET MUTATION DISCIPLINE (NON-NEGOTIABLE — THIS RULE EXISTS BECAUSE PREVIOUS RUNS DIED AND LEFT THE DOGFOOD TARGET IN A BROKEN STATE REQUIRING DIRECT HUMAN REPAIR):**
-- For any task that modifies a live, production, or shared location (the real `~/.hermes/skills/proxmox-control/`, a real infra control plane, a live vault, etc.): that location is **read-only for all development and iteration**.
-- **MANDATORY FIRST ACTION (before any design, coding, or tool use on the real location):** Create a full isolated working copy of the relevant code/skill/tree inside your designated --target-dir (e.g. `cp -a ~/.hermes/skills/proxmox-control ./work/proxmox-control-copy` or `git worktree add`). From that moment on, the live location is treated as read-only reference only.
+**SAFE LIVE-TARGET MUTATION DISCIPLINE (NON-NEGOTIABLE):**
+- For any task that modifies a live, production, or shared location: that location is **read-only for all development and iteration**.
+- **MANDATORY FIRST ACTION (before any design, coding, or tool use on the real location):** Create a full isolated working copy of the relevant code/tree inside your designated --target-dir (e.g. `cp -a <live-path> ./work/isolated-copy` or `git worktree add`). From that moment on, the live location is treated as read-only reference only.
 - All implementation, editing (search_replace), testing, iteration, and validation MUST happen exclusively inside that isolated copy in the target_dir.
-- The *only* time the live target may be mutated is in a single, final, atomic promotion step — and only after the entire deliverable (guest-exec + resize-disk + all supporting fixes + tests + docs + SKILL.md updates) is complete, green, and reviewable in the isolated workspace, with full evidence captured on disposable live resources.
-- A killed, timed-out, or interrupted run MUST leave the live target byte-for-byte identical to launch state. No half-implemented guest-exec classification, no wrong LXC `pct exec` path, no broken state. Partial work lives only in the harness target_dir + PROGRESS.json.
+- The *only* time the live target may be mutated is in a single, final, atomic promotion step — and only after the entire deliverable is complete, green, and reviewable in the isolated workspace, with full evidence captured.
+- A killed, timed-out, or interrupted run MUST leave the live target byte-for-byte identical to launch state. No partial edits in live/shared targets. Partial work lives only in the harness target_dir + PROGRESS.json.
 - If the harness or outer environment kills the job, the next invocation (or human) sees a pristine live target and can resume cleanly from the checkpoint. Any "I had to manually edit the live skill to make it testable again" is now a documented failure of the harness + prompt contract.
-- Proxmox dogfood example: Your very first tool-using action after loading PROGRESS must be creating the isolated copy. Never run search_replace directly against `~/.hermes/skills/proxmox-control/scripts/proxmox_control.py` until the final promotion of the complete patch set.
 
 **LONG-RUNNING / KEEP-DRIVING MODE (WHEN LAUNCHED WITH --long-running OR EQUIVALENT HIGH-LIMIT FLAGS):**
-The harness has been invoked in a mode optimized for multi-hour ambitious implementation (e.g. extending a production skill like proxmox-control with guest-exec, resize, discovery fixes under strict safety). This means:
+The harness has been invoked in a mode optimized for multi-hour ambitious implementation. This means:
 - You have been given (or the wait/probe logic is using) higher turn/timeout budgets.
 - Expect (and survive) multiple harness-level timeouts / resumptions / probes.
 - Your only objective across *all* of them collectively is to reach the binary "fully delivered + tested + promotable" state.
@@ -1779,13 +1778,13 @@ def acquire_target_lock(target_name: str, lock_base_dir: Optional[Path] = None):
     - Reduces risk of conflicting mutations on the same resources.
     - Makes any future internal caching or state assumptions safer.
 
-    Lock files live under lock_base_dir (default ~/.config/hermes/proxmox/locks)
+    Lock files live under lock_base_dir (default ~/.config/gcdh/locks)
     as <target>.lock (0600).
     The lock is released automatically on context exit (including exceptions).
     """
     import fcntl  # local import to keep top-level clean if not always needed
 
-    lock_dir = lock_base_dir or (Path.home() / ".config" / "hermes" / "proxmox" / "locks")
+    lock_dir = lock_base_dir or (Path.home() / ".config" / "gcdh" / "locks")
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{target_name}.lock"
 
@@ -1930,7 +1929,7 @@ def main():
     )
 
     # === LONG-RUNNING / KEEP-DRIVING MODE: bump effective limits for ambitious tasks ===
-    # This gives real multi-hour Proxmox-style skill extension dogfood a fighting chance
+    # This gives real multi-hour implementation work a fighting chance
     # without requiring the user to remember every --timeout 14400 etc on every launch.
     # Only bumps *upward* if the flag is set and the user did not already specify higher values.
     long_running = getattr(args, "long_running", False) or getattr(args, "use_tmux", False)
@@ -1957,18 +1956,18 @@ def main():
                 print("[cdh] --long-running: bumped --poll-interval to 180s (less chatty for long jobs).")
         # Also ensure probe_timeout (passed downstream) benefits; the call sites read from args.timeout
 
-    # Strong recommendation for serious dogfood / implementation tasks
+    # Strong recommendation for serious implementation tasks
     if not long_running and not is_standalone and verbosity >= 1:
         task_lower = (args.task or "").lower()
-        serious_keywords = ["full", "skill extension", "production-grade", "proxmox", "guest-exec", "end-to-end", "ambitious", "dogfood", "complete implementation", "working code", "reviewable", "implementation", "production"]
+        serious_keywords = ["full", "skill extension", "production-grade", "end-to-end", "ambitious", "complete implementation", "working code", "reviewable", "implementation", "production"]
         if any(kw in task_lower for kw in serious_keywords) or (args.output_file and len((args.task or "")) > 80):
             print("[cdh] ⚠️  SERIOUS TASK DETECTED — THIS IS THE PRIMARY USE CASE FOR THE HARNESS")
-            print("[cdh] You are running what looks like a real, ambitious, long-running implementation or dogfood job.")
+            print("[cdh] You are running what looks like a real, ambitious, long-running implementation job.")
             print("[cdh] The recommended and supported way to run this kind of work is:")
             print("[cdh]   gcdh --long-running --wait-for-completion --max-wait 86400 --output-file ...")
             print("[cdh]   (or ./scripts/gcdh-tmux ... for maximum survival in hostile environments like this TUI)")
             print("[cdh] Without --long-running you are much more likely to hit early deaths, stale data, and incomplete results.")
-            print("[cdh] Long-running mode + safe isolated workspace + auto-reap is the standard pattern for serious self-dogfooding.")
+            print("[cdh] Long-running mode + safe isolated workspace + auto-reap is the standard pattern for serious implementation work.")
 
     # Hostile launcher escape (TUI / grok wrapper / 300s SIGTERM environments)
     # This is the direct response to "even with --long-running the outer wrapper killed the job".
@@ -1985,8 +1984,8 @@ def main():
             print("[cdh] ESCAPE RECIPE (paste this to launch the *same* task in a survivor that outlives the TUI timeout):")
             print("[cdh]   tmux new-session -d -s cdh-$(date +%s) 'cd \"$(pwd)\" && gcdh --long-running --wait-for-completion --max-wait 86400 --output-file /tmp/cdh-escape-$(date +%s).json [your full flags here]'")
             print("[cdh] Then: tmux attach -t <that session>   (or just let it run; use --status / --resume later)")
-            print("[cdh] This pattern is what lets the harness actually do multi-hour dogfood without the outer harness killing it.")
-            print("[cdh] For the current Proxmox work: use the tmux escape + the safe live-target mutation rule (no direct edits to the real skill until final promotion).")
+            print("[cdh] This pattern is what lets the harness actually do multi-hour work without the outer harness killing it.")
+            print("[cdh] Use the tmux escape + the safe live-target mutation rule (no direct edits to live/shared targets until final promotion).")
 
             # === REAL SELF-ESCAPE FOR HOSTILE LAUNCHERS (the actual fix for "riding a harness") ===
             # If we are in a short-timeout outer wrapper (this TUI, grok CLI with 300s SIG15, etc.)
