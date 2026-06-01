@@ -1,5 +1,9 @@
 #!/bin/bash
 # gcdh-tmux — robust one-command launcher for serious long-running work
+#
+# Key safety property: giant task prompts (the 13KB+ original architectural prompts,
+# or any real dogfood work) are *never* passed through shell argument lists or
+# unquoted heredocs. They travel via --task-file instead.
 
 set -euo pipefail
 
@@ -11,40 +15,106 @@ fi
 SESSION="cdh-$(date +%s)-$$"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
-# Build argument list, ensuring --long-running is present
-args=("$@")
+# Original args as provided by the caller (may contain --task "giant multi-line..." or a bare positional task)
+raw_args=("$@")
+
+# Ensure --long-running is present
+args=("${raw_args[@]}")
 if [[ ! " ${args[*]} " =~ " --long-running " && ! " ${args[*]} " =~ " --keep-driving " ]]; then
     args=("--long-running" "${args[@]}")
 fi
 
-# Create a temporary script for the actual command.
-# This is much more reliable for very long prompts than trying to pass
-# a giant quoted string through tmux + shell.
-TMP_SCRIPT=$(mktemp /tmp/gcdh-tmux-XXXXXX.sh)
-chmod +x "$TMP_SCRIPT"
+# === TASK EXTRACTION + --task-file conversion (the critical robustness fix) ===
+# Giant prompts must never go through ${args[@]@Q} inside an unquoted heredoc.
+# We pull the task content out, write it to a restricted temp file, and pass --task-file instead.
+TASK_FILE=""
+TASK_CONTENT=""
 
-cat > "$TMP_SCRIPT" << EOF
+# 1. Look for explicit --task VALUE
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+    if [[ "${args[$i]}" == "--task" && $((i+1)) -lt ${#args[@]} ]]; then
+        TASK_CONTENT="${args[$((i+1))]}"
+        # Remove --task and its value from the list we'll pass inward
+        args=("${args[@]:0:$i}" "${args[@]:$((i+2))}")
+        break
+    fi
+    ((i++))
+done
+
+# 2. If no --task flag, treat the first non-flag argument as a positional task (the old "gcdh ask '...'" pattern)
+if [[ -z "$TASK_CONTENT" ]]; then
+    j=0
+    while [[ $j -lt ${#args[@]} ]]; do
+        arg="${args[$j]}"
+        if [[ "$arg" != -* && "$arg" != "--task-file" ]]; then
+            # Heuristic: anything that looks like a real task (contains letters + is reasonably long, or contains newlines)
+            if [[ "$arg" == *$'\n'* || ${#arg} -gt 200 ]]; then
+                TASK_CONTENT="$arg"
+                args=("${args[@]:0:$j}" "${args[@]:$((j+1))}")
+                break
+            fi
+        fi
+        ((j++))
+    done
+fi
+
+# If we extracted a task (the common case for serious work), persist it safely
+if [[ -n "$TASK_CONTENT" ]]; then
+    TASK_FILE=$(mktemp /tmp/gcdh-task-XXXXXX.txt)
+    chmod 600 "$TASK_FILE"
+    printf '%s' "$TASK_CONTENT" > "$TASK_FILE"
+    # Inject --task-file in a safe position (after --long-running is fine)
+    args=("--task-file" "$TASK_FILE" "${args[@]}")
+fi
+
+# Create the tiny launcher wrapper script (always small and safe).
+# The actual (now small) argument list is passed as positional parameters to this script,
+# so we never embed giant strings or complex quoting inside the generated script itself.
+TMP_SCRIPT=$(mktemp /tmp/gcdh-tmux-XXXXXX.sh)
+chmod 700 "$TMP_SCRIPT"
+
+cat > "$TMP_SCRIPT" << 'WRAPPER_EOF'
 #!/bin/bash
 set -euo pipefail
+# Clean up the launcher temp files when we exit (success or failure).
+# $TASK_FILE is only set when we actually created one.
+trap 'rm -f "$0" ${TASK_FILE:+"$TASK_FILE"} 2>/dev/null || true' EXIT
+
 cd "$REPO_ROOT"
 export GCDH_IN_TMUX=1
 
-# Prefer local venv if it exists
+# Prefer the repo-local venv (brings in the right Python + deps for this worktree)
 if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-    exec "$REPO_ROOT/.venv/bin/python" -m code_delegation_harness ${args[@]@Q}
+    exec "$REPO_ROOT/.venv/bin/python" -m code_delegation_harness "$@"
 else
-    exec gcdh ${args[@]@Q}
+    exec gcdh "$@"
 fi
-EOF
+WRAPPER_EOF
+
+# Make the variables the wrapper expects available in its environment
+export REPO_ROOT
+if [[ -n "$TASK_FILE" ]]; then
+    export TASK_FILE
+fi
 
 echo "[gcdh-tmux] Launching in detached tmux session: $SESSION"
-tmux new-session -d -s "$SESSION" "$TMP_SCRIPT"
+if [[ -n "$TASK_FILE" ]]; then
+    echo "[gcdh-tmux] (using --task-file for the prompt — giant payloads never touch the shell)"
+fi
+
+# Pass the safe (small) args as real positional parameters to the wrapper script.
+# This is the robust handoff.
+tmux new-session -d -s "$SESSION" "$TMP_SCRIPT" "${args[@]}"
 
 echo
 echo "[gcdh-tmux] *** Job is now running in tmux ***"
 echo "[gcdh-tmux] Session : $SESSION"
 echo "[gcdh-tmux] Attach  : tmux attach -t $SESSION"
 echo "[gcdh-tmux] Monitor : gcdh --status --target-dir \"$PWD\""
+if [[ -n "$TASK_FILE" ]]; then
+    echo "[gcdh-tmux] Task file: $TASK_FILE (will be cleaned up when the run ends)"
+fi
 echo "[gcdh-tmux] (You can safely exit now.)"
 echo
 

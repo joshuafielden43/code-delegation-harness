@@ -158,6 +158,37 @@ This is extremely useful for agents and for humans reviewing scope.
 
 Combine with `--quiet` for the cleanest preview output.
 
+### Automatic Pass-2 Remediation (Counter-Prompt Mode)
+
+For underperforming first passes, you can enable a second targeted remediation pass:
+
+```bash
+gcdh \
+  --task "..." \
+  --target-dir /path/to/work \
+  --output-file /tmp/run.json \
+  --auto-remediate \
+  --remediate-on partial,fail,missing_summary \
+  --remediation-max-passes 1 \
+  --remediation-mode targeted-inversion
+```
+
+What it does:
+- Runs pass 1 normally.
+- If triggered (`partial_success`, `failure`, or missing summary marker), runs pass 2 automatically.
+- Builds a weakness profile from pass-1 output, then applies a bounded-aggressive targeted inversion overlay ("attack this issue") against weak spots only.
+- Preserves pass-1 baseline context and avoids redoing validated work.
+- Emits reconciliation metadata in final JSON:
+  - `pass_number`
+  - `parent_run_id`
+  - `remediation_reason`
+  - `weakness_profile`
+  - `remediation_applied`
+  - `remediation_delta`
+
+When `--output-file` is used, the pass-2 prompt is also persisted as:
+- `<output-stem>.pass2.prompt.txt`
+
 ## Strengths
 
 - Produces excellent, self-contained review artifacts by default
@@ -194,6 +225,7 @@ The code in this repository is the current production version.
 Core implementation lives in `src/code_delegation_harness/harness.py` (with shims in `bin/gcdh`; `scripts/grok_delegate.py` is a legacy compatibility shim). You can also run with `python -m code_delegation_harness` after install or with PYTHONPATH=src.
 
 See `CHANGELOG.md` for release history. Full development notes live in the upstream development tree.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contributor credit.
 
 ## License
 

@@ -460,6 +460,91 @@ class TestLongRunningHardening(unittest.TestCase):
                 # call happened (the immediate probe)
                 self.assertTrue(mock_call.called)
 
+    def test_auto_remediation_two_pass_orchestration_end_to_end_with_mocked_calls(self):
+        """Throwaway E2E scenario: main() runs pass1 -> auto-remediation pass2 and writes merged artifacts.
+        Uses mocked model calls (no external model/network), but real filesystem artifacts in a temp target_dir.
+        """
+        import tempfile
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from code_delegation_harness.harness import main
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            out_json = td_path / "result.json"
+
+            pass1_raw = {
+                "text": (
+                    "=== DELEGATION SUMMARY ===\n"
+                    "SUMMARY: Partial work done.\n"
+                    "FILES_MODIFIED:\n"
+                    "- src/foo.py\n"
+                    "NEXT_STEPS:\n"
+                    "- finish verification\n"
+                    "=== END SUMMARY ==="
+                ),
+                "exit_code": 0,
+                "stderr": "non-fatal issue",
+            }
+            pass2_raw = {
+                "text": (
+                    "=== DELEGATION SUMMARY ===\n"
+                    "SUMMARY: Remediation closed weak spots.\n"
+                    "FILES_MODIFIED:\n"
+                    "- src/foo.py\n"
+                    "VERIFICATION:\n"
+                    "- pytest -q (pass)\n"
+                    "CHANGE_SUMMARY:\n"
+                    "- hardened verification and summary sections\n"
+                    "=== END SUMMARY ==="
+                ),
+                "exit_code": 0,
+            }
+            weak_spots = [
+                {
+                    "issue": "missing_verification",
+                    "evidence": "Verification section empty.",
+                    "impact": "Cannot trust correctness.",
+                    "target_prompt_section": "VERIFICATION",
+                },
+                {
+                    "issue": "missing_change_summary",
+                    "evidence": "Change summary section empty.",
+                    "impact": "Reviewability reduced.",
+                    "target_prompt_section": "CHANGE_SUMMARY",
+                },
+            ]
+
+            argv = [
+                "gcdh",
+                "--task", "Throwaway remediation test task",
+                "--target-dir", str(td_path),
+                "--output-file", str(out_json),
+                "--auto-remediate",
+                "--remediate-on", "partial,fail,missing_summary",
+                "--remediation-max-passes", "1",
+            ]
+
+            with patch("sys.argv", argv), \
+                 patch("code_delegation_harness.harness.call_model_headless", side_effect=[pass1_raw, pass2_raw]), \
+                 patch("code_delegation_harness.harness._extract_weakness_profile", return_value=weak_spots):
+                main()
+
+            self.assertTrue(out_json.exists())
+            result = json.loads(out_json.read_text())
+            self.assertTrue(result.get("remediation_applied"))
+            self.assertEqual(result.get("pass_number"), 2)
+            self.assertIn("remediation_delta", result)
+            self.assertEqual(result["remediation_delta"].get("selected_pass"), 2)
+            self.assertEqual(result.get("status"), "success")
+            self.assertIn("weakness_profile", result)
+            self.assertEqual(len(result.get("weakness_profile", [])), 2)
+            self.assertIn("metadata", result)
+            self.assertTrue(result["metadata"].get("remediation_applied"))
+            self.assertTrue((td_path / "result.pass2.prompt.txt").exists())
+
 
 if __name__ == "__main__":
     # Support direct run

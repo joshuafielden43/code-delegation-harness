@@ -15,11 +15,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -966,6 +968,217 @@ def _determine_status(raw_result: dict, has_changes: bool) -> str:
         return "success"
 
 
+def _parse_remediation_triggers(raw: str) -> set[str]:
+    """Normalize comma-separated remediation trigger tokens."""
+    mapping = {
+        "partial": "partial_success",
+        "partial_success": "partial_success",
+        "fail": "failure",
+        "failure": "failure",
+        "missing_summary": "missing_summary",
+        "missing-summary": "missing_summary",
+    }
+    tokens = [t.strip().lower() for t in (raw or "").split(",") if t.strip()]
+    out = set()
+    for token in tokens:
+        if token in mapping:
+            out.add(mapping[token])
+    return out or {"partial_success", "failure", "missing_summary"}
+
+
+def _should_auto_remediate(clean_result: dict, triggers: set[str]) -> tuple[bool, Optional[str]]:
+    """Return whether remediation should run and a concrete reason."""
+    status = clean_result.get("status")
+    if status in triggers:
+        return True, status
+
+    errors = clean_result.get("errors") or []
+    if "missing_summary" in triggers:
+        for err in errors:
+            if err.get("type") == "missing_summary_marker":
+                return True, "missing_summary"
+    return False, None
+
+
+def _extract_weakness_profile(clean_result: dict, target_dir: str, model: str, timeout: int, max_turns: int) -> list[dict]:
+    """Build a normalized weakness profile; starts deterministic, then optional inference ranking."""
+    profile = []
+    if not clean_result.get("verification", "").strip():
+        profile.append({
+            "issue": "missing_verification",
+            "evidence": "Verification section is empty or too weak.",
+            "impact": "Cannot trust correctness of changes.",
+            "target_prompt_section": "VERIFICATION",
+        })
+    if not clean_result.get("change_summary", "").strip():
+        profile.append({
+            "issue": "missing_change_summary",
+            "evidence": "Change summary section is empty or weak.",
+            "impact": "Human review velocity and confidence are reduced.",
+            "target_prompt_section": "CHANGE_SUMMARY",
+        })
+    next_steps = (clean_result.get("next_steps") or "").strip()
+    if next_steps:
+        profile.append({
+            "issue": "unresolved_next_steps",
+            "evidence": next_steps[:400],
+            "impact": "Core task likely incomplete.",
+            "target_prompt_section": "NEXT_STEPS",
+        })
+    for err in clean_result.get("errors", []) or []:
+        etype = err.get("type", "error")
+        msg = err.get("message", "") or str(err)
+        if etype == "missing_summary_marker":
+            target = "MANDATORY_FINAL_OUTPUT_FORMAT"
+        elif etype in ("wrapper_error", "timeout", "nonzero_exit"):
+            target = "VERIFICATION"
+        else:
+            target = "OBSERVATIONS"
+        profile.append({
+            "issue": f"error:{etype}",
+            "evidence": msg[:400],
+            "impact": "Execution quality degraded.",
+            "target_prompt_section": target,
+        })
+
+    # Optional inference pass to prioritize profile; keep deterministic fallback.
+    try:
+        inference_prompt = (
+            "You are a remediation analyzer.\n"
+            "Given this normalized result JSON, return ONLY compact JSON with key 'prioritized_weaknesses'.\n"
+            "Each weakness item must contain: issue, evidence, impact, target_prompt_section.\n"
+            "Do not add fields or prose.\n\n"
+            f"INPUT_JSON:\n{json.dumps(clean_result, indent=2)[:12000]}\n"
+        )
+        inference = call_model_headless(
+            inference_prompt,
+            cwd=target_dir,
+            model=model,
+            timeout=min(timeout, 120),
+            max_turns=min(max_turns, 20),
+        )
+        text = inference.get("text", "") or inference.get("raw_stdout", "")
+        data = json.loads(text) if text.strip().startswith("{") else {}
+        llm_profile = data.get("prioritized_weaknesses") if isinstance(data, dict) else None
+        if isinstance(llm_profile, list):
+            merged = []
+            for item in llm_profile[:8]:
+                if not isinstance(item, dict):
+                    continue
+                if not all(k in item for k in ("issue", "evidence", "impact", "target_prompt_section")):
+                    continue
+                merged.append({
+                    "issue": str(item["issue"])[:120],
+                    "evidence": str(item["evidence"])[:500],
+                    "impact": str(item["impact"])[:200],
+                    "target_prompt_section": str(item["target_prompt_section"])[:80],
+                })
+            if merged:
+                profile = merged
+    except Exception:
+        pass
+
+    # De-duplicate by issue/evidence pair
+    unique = []
+    seen = set()
+    for item in profile:
+        key = (item.get("issue"), item.get("evidence"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique[:10]
+
+
+def _compose_remediation_prompt(base_prompt: str, weakness_profile: list[dict], remediation_reason: str) -> str:
+    """Targeted inversion overlay; preserves base prompt and attacks weak spots ferociously but safely."""
+    weakness_lines = []
+    for idx, item in enumerate(weakness_profile, 1):
+        weakness_lines.append(
+            f"{idx}. issue={item.get('issue')} | impact={item.get('impact')} | "
+            f"target={item.get('target_prompt_section')} | evidence={item.get('evidence')}"
+        )
+    weakness_text = "\n".join(weakness_lines) if weakness_lines else "1. issue=general_quality_gap | impact=underperformance"
+
+    remediation_overlay = f"""
+
+=== PASS 2 REMEDIATION MODE (AUTOMATIC COUNTER-PROMPT) ===
+Reason for remediation trigger: {remediation_reason}
+
+Your mission is not to redo pass 1. Your mission is to close these weak spots with concrete evidence.
+ATTACK THE ISSUE ferociously, but stay bounded:
+- Strictly remain in the provided target directory and task scope.
+- No destructive operations or broad unrelated refactors.
+- Do not redo validated completed work.
+- Prioritize fixing weak spots and proving fixes.
+
+Weakness profile to attack:
+{weakness_text}
+
+Required behavior for this remediation pass:
+- Rewrite only the weak parts of your approach.
+- Provide concrete verification command/results in VERIFICATION.
+- Ensure CHANGE_SUMMARY, OBSERVATIONS, and ERRORS are explicit and grounded.
+- If anything remains unresolved, state it plainly in NEXT_STEPS with minimal, concrete follow-up.
+
+Success condition for pass 2:
+- Weaknesses above are either closed with evidence or clearly marked unresolved with reason.
+
+=== END PASS 2 REMEDIATION MODE ===
+"""
+    return base_prompt + remediation_overlay
+
+
+def _status_rank(status: str) -> int:
+    order = {"failure": 0, "partial_success": 1, "no_changes": 2, "success": 3}
+    return order.get(status or "", 0)
+
+
+def _reconcile_remediation_result(pass1: dict, pass2: dict, weakness_profile: list[dict]) -> tuple[dict, dict]:
+    """Merge pass outcomes; prefer pass2 only when it closes weaknesses or improves quality."""
+    closed = []
+    unresolved = []
+    for weak in weakness_profile:
+        issue = weak.get("issue", "")
+        if issue == "missing_verification":
+            ok = bool((pass2.get("verification") or "").strip())
+        elif issue == "missing_change_summary":
+            ok = bool((pass2.get("change_summary") or "").strip())
+        elif issue.startswith("error:"):
+            ok = _status_rank(pass2.get("status")) > _status_rank(pass1.get("status"))
+        elif issue == "unresolved_next_steps":
+            ok = len((pass2.get("next_steps") or "").strip()) < len((pass1.get("next_steps") or "").strip())
+        else:
+            ok = _status_rank(pass2.get("status")) >= _status_rank(pass1.get("status"))
+        if ok:
+            closed.append(issue)
+        else:
+            unresolved.append(issue)
+
+    improved = _status_rank(pass2.get("status")) > _status_rank(pass1.get("status"))
+    choose_pass2 = improved or (len(closed) > len(unresolved) and len(closed) > 0)
+    final_result = dict(pass2 if choose_pass2 else pass1)
+    delta = {
+        "pass1_status": pass1.get("status"),
+        "pass2_status": pass2.get("status"),
+        "selected_pass": 2 if choose_pass2 else 1,
+        "closed_weak_spots": closed,
+        "unresolved_weak_spots": unresolved,
+    }
+    final_result["remediation_applied"] = True
+    final_result["weakness_profile"] = weakness_profile
+    final_result["remediation_delta"] = delta
+    final_result["pass1_result"] = {
+        "status": pass1.get("status"),
+        "summary": (pass1.get("summary") or "")[:400],
+    }
+    final_result["pass2_result"] = {
+        "status": pass2.get("status"),
+        "summary": (pass2.get("summary") or "")[:400],
+    }
+    return final_result, delta
+
+
 def _compute_diffs_and_stats(target_dir: str, modified: list) -> Tuple[dict, dict, dict, dict]:
     """Extracted diff logic: best-effort git diff + line stats + short human description + truncated preview per file."""
     if not target_dir or not modified:
@@ -1552,6 +1765,54 @@ def _print_dry_run_preview(args, target_dir: str) -> None:
             print("Dry run complete (quiet). No files written.")
 
 
+# =============================================================================
+# SINGLE-INSTANCE / CONCURRENCY SELF-PROTECTION (high-assurance)
+# =============================================================================
+
+@contextmanager
+def acquire_target_lock(target_name: str, lock_base_dir: Optional[Path] = None):
+    """
+    Advisory exclusive lock per target.
+
+    Prevents multiple concurrent invocations of the harness against the same
+    target from the same host. This is a deliberate safety control:
+    - Avoids self-hammering the target with duplicate discovery / state scans.
+    - Reduces risk of conflicting mutations on the same resources.
+    - Makes any future internal caching or state assumptions safer.
+
+    Lock files live under lock_base_dir (default ~/.config/hermes/proxmox/locks)
+    as <target>.lock (0600).
+    The lock is released automatically on context exit (including exceptions).
+    """
+    import fcntl  # local import to keep top-level clean if not always needed
+
+    lock_dir = lock_base_dir or (Path.home() / ".config" / "hermes" / "proxmox" / "locks")
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{target_name}.lock"
+
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.write(str(os.getpid()) + "\n")
+        lock_file.flush()
+        yield
+    except BlockingIOError:
+        try:
+            existing = lock_file.read().strip()
+        except Exception:
+            existing = "?"
+        raise RuntimeError(
+            f"Another harness instance is already running against target '{target_name}' "
+            f"(PID {existing}). Only one concurrent run per target is permitted."
+        ) from None
+    finally:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_file.close()
+
+
 def main():
     # Resolve version dynamically from package metadata (set by pyproject.toml).
     # Works for pip installs, editable installs, and direct dev execution via shims.
@@ -1559,11 +1820,14 @@ def main():
         import importlib.metadata
         _VERSION = importlib.metadata.version("code-delegation-harness")
     except Exception:
-        _VERSION = "0.2.1"
+        # Fallback only for development environments without proper packaging metadata.
+        # This should never be hit in installed wheels or editable installs.
+        _VERSION = "0.3.1-dev"
 
     parser = argparse.ArgumentParser(description="Delegate coding work to Grok")
     parser.add_argument("task_positional", nargs="?", help="The coding task to perform (alternative to --task)")
     parser.add_argument("--task", help="The coding task to perform")
+    parser.add_argument("--task-file", help="Path to a file containing the full coding task (strongly preferred for prompts > ~4KB or any prompt with newlines/quotes. The only robust way to launch the original 13KB+ architectural prompts through tmux/launchers without mangling.)")
     parser.add_argument("--target-dir", help="Working directory for the task")
     parser.add_argument("--context", help="Additional context for the task")
     parser.add_argument("--constraints", help="Hard constraints or requirements")
@@ -1583,6 +1847,10 @@ def main():
     parser.add_argument("--detach", action="store_true", help="Launch in detached/daemon mode (uses nohup + setsid style so the harness survives terminal close and parent death better). Best used with --wait-for-completion or when you want true fire-and-forget.")
     parser.add_argument("--tmux", "--use-tmux", dest="use_tmux", action="store_true", help="Force launch inside a detached tmux session (survives outer short-timeout wrappers like this TUI / 300s SIG15 kills). Strongly recommended (or let --long-running auto-escape) for any serious work from constrained environments. Implies --long-running behavior for the inner job.")
     parser.add_argument("--long-running", "--keep-driving", dest="long_running", action="store_true", help="MOST IMPORTANT FLAG FOR SERIOUS WORK. Enable long-job mode for ambitious multi-hour implementation tasks (e.g. full skill extensions). Strongly recommended for almost all real dogfood runs. Bumps timeouts/turns/waits, injects ruthless 'job to the end' + anti-stale-data language, and enables dynamic fresh checkpoint injection on every probe. Use this or expect your runs to die early and/or rely on stale artifacts.")
+    parser.add_argument("--auto-remediate", action="store_true", help="Enable automatic pass-2 remediation when pass-1 underperforms.")
+    parser.add_argument("--remediate-on", default="partial,fail,missing_summary", help="Comma-separated remediation triggers: partial,fail,missing_summary.")
+    parser.add_argument("--remediation-max-passes", type=int, default=1, help="Maximum remediation passes (default: 1).")
+    parser.add_argument("--remediation-mode", default="targeted-inversion", choices=["targeted-inversion"], help="Remediation strategy (default: targeted-inversion).")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output. Only show errors and final artifact locations.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show more detailed internal progress messages.")
     parser.add_argument("--version", action="version", version=f"code-delegation-harness {_VERSION}")
@@ -1592,6 +1860,18 @@ def main():
     # Resolve task from either --task or the positional (for ergonomic launch patterns like "gcdh ask '...'")
     if not getattr(args, "task", None) and getattr(args, "task_positional", None):
         args.task = args.task_positional
+
+    # --task-file support: read giant prompts from a file so they never travel through
+    # shell argument lists, heredocs, or launchers. This is the robust path for the
+    # original 13KB+ architectural prompts and any serious dogfood work.
+    if getattr(args, "task_file", None):
+        try:
+            with open(args.task_file, "r", encoding="utf-8") as f:
+                file_task = f.read()
+            if file_task:
+                args.task = file_task
+        except Exception as e:
+            parser.error(f"Failed to read --task-file {args.task_file}: {e}")
 
     # --- Detach / daemon mode handling (early, before any heavy work) ---
     if args.detach:
@@ -1758,6 +2038,22 @@ def main():
     if not is_standalone and (not args.task or not args.target_dir):
         sys.exit(1)
 
+    # Resolve target directory before early-launch bookkeeping.
+    target_dir = os.path.abspath(args.target_dir) if getattr(args, "target_dir", None) else "."
+
+    # Enforce one active non-standalone run per target directory on this host.
+    # Use a sanitized target token so lock filenames are stable and safe.
+    if not is_standalone:
+        import atexit
+        target_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", target_dir.strip("/"))[:120] or "default-target"
+        try:
+            lock_ctx = acquire_target_lock(target_name, lock_base_dir=Path(target_dir) / ".cdh-locks")
+            lock_ctx.__enter__()
+            atexit.register(lambda: lock_ctx.__exit__(None, None, None))
+        except RuntimeError as e:
+            print(f"LOCK ERROR: {e}", file=sys.stderr)
+            return 2
+
     # === EARLY LAUNCH RECORD (critical for dogfood observability) ===
     # Create a minimal status file as early as possible so that even if the run dies
     # during prompt construction, auto-reap, or other pre-launch steps, we have a record.
@@ -1874,16 +2170,16 @@ def main():
                 print("[cdh] WARNING: This run was previously marked as crashed (no heartbeat). No checkpoint files found; resuming with original prompt only (best effort).")
             # (for non-crashed resumes with no ckpt, silent — normal case for clean first launch)
 
-                # Update status to reflect we're attempting recovery
-                try:
-                    sm = StatusManager(resume_status_file) if resume_status_file else None
-                    if sm and sm.load():
-                        msg = "resuming from crashed state" if state == "crashed" else "resuming / re-attaching background wait"
-                        sm.heartbeat(msg)
-                        # Clean the sentinel now that we're successfully resuming — the run is no longer "crashed"
-                        sm._cleanup_crash_sentinel()
-                except Exception:
-                    pass
+            # Update status to reflect we're attempting recovery
+            try:
+                sm = StatusManager(resume_status_file) if resume_status_file else None
+                if sm and sm.load():
+                    msg = "resuming from crashed state" if state == "crashed" else "resuming / re-attaching background wait"
+                    sm.heartbeat(msg)
+                    # Clean the sentinel now that we're successfully resuming — the run is no longer "crashed"
+                    sm._cleanup_crash_sentinel()
+            except Exception:
+                pass
 
             # Enter waiting mode using the (possibly augmented) prompt
             # Pass probe_timeout and long_running for hardened long-job behavior even on resume.
@@ -1946,7 +2242,7 @@ def main():
                     # Use StatusManager for better dead-run detection (it re-validates owner)
                     try:
                         sm = StatusManager(sf)
-                        if sm.load() and sm.looks_dead(max_silence_seconds=300):
+                        if sm.load() and sm.looks_dead(max_silence_seconds=300, check_pid=True):
                             entry["state"] = "crashed (no heartbeat)"
                             entry["dead"] = True
                     except Exception:
@@ -2147,6 +2443,9 @@ def main():
 
     # Produce clean structured output (the main improvement)
     clean_result = normalize_result(result, target_dir=target_dir)
+    clean_result["pass_number"] = 1
+    clean_result.setdefault("metadata", {})
+    clean_result["metadata"]["pass_number"] = 1
 
     # Surface timeout / background run information clearly on the *clean* result so reports + JSON + run-meta see them
     if result.get("timed_out"):
@@ -2165,6 +2464,76 @@ def main():
     # If we created a launch status file, make sure the run_id is known
     if launch_run_id and "run_id" not in clean_result:
         clean_result["run_id"] = launch_run_id
+
+    # Optional automatic pass-2 remediation.
+    remediation_prompt_path = None
+    if args.auto_remediate and args.remediation_max_passes > 0:
+        triggers = _parse_remediation_triggers(args.remediate_on)
+        should_remediate, remediation_reason = _should_auto_remediate(clean_result, triggers)
+        if should_remediate and args.remediation_mode == "targeted-inversion":
+            weakness_profile = _extract_weakness_profile(clean_result, target_dir, args.model, args.timeout, args.max_turns)
+            pass2_prompt = _compose_remediation_prompt(prompt, weakness_profile, remediation_reason or "degraded_output")
+            if args.output_file:
+                out_base = Path(args.output_file)
+                remediation_prompt_path = out_base.parent / f"{out_base.stem}.pass2.prompt.txt"
+            else:
+                remediation_prompt_path = Path(target_dir) / f".cdh-run-{launch_run_id}.pass2.prompt.txt"
+            try:
+                remediation_prompt_path.write_text(pass2_prompt)
+            except Exception:
+                remediation_prompt_path = None
+
+            retry = RetryPolicy(max_attempts=3, base_delay=1.5)
+            ok, remediation_outcome = retry.run(
+                call_model_headless,
+                prompt=pass2_prompt,
+                cwd=target_dir,
+                model=args.model,
+                timeout=args.timeout,
+                max_turns=args.max_turns,
+            )
+            if ok:
+                pass2_raw = remediation_outcome
+            else:
+                pass2_raw = {
+                    "error": f"remediation_pass_failed: {str(remediation_outcome)}",
+                    "exit_code": -1,
+                    "text": "",
+                }
+            pass2_raw["metadata"] = {
+                "task": args.task,
+                "target_directory": target_dir,
+                "timestamp": datetime.now().isoformat(),
+                "model": args.model,
+                "run_name": args.run_name,
+                "pass_number": 2,
+                "parent_run_id": clean_result.get("run_id") or launch_run_id,
+                "remediation_reason": remediation_reason,
+            }
+            _propagate_background_flags(pass2_raw, pass2_raw["metadata"])
+            pass2_clean = normalize_result(pass2_raw, target_dir=target_dir)
+            pass2_clean["pass_number"] = 2
+            pass2_clean.setdefault("metadata", {})
+            pass2_clean["metadata"]["pass_number"] = 2
+            pass2_clean["metadata"]["parent_run_id"] = clean_result.get("run_id") or launch_run_id
+            pass2_clean["metadata"]["remediation_reason"] = remediation_reason
+
+            clean_result, remediation_delta = _reconcile_remediation_result(clean_result, pass2_clean, weakness_profile)
+            clean_result.setdefault("metadata", {})
+            clean_result["metadata"]["remediation_applied"] = True
+            clean_result["metadata"]["remediation_delta"] = remediation_delta
+            clean_result["metadata"]["remediation_reason"] = remediation_reason
+            clean_result["metadata"]["parent_run_id"] = clean_result.get("run_id") or launch_run_id
+            if remediation_prompt_path:
+                clean_result["metadata"]["remediation_prompt_file"] = str(remediation_prompt_path)
+        else:
+            clean_result["remediation_applied"] = False
+            clean_result["remediation_delta"] = {
+                "selected_pass": 1,
+                "reason": "trigger_not_matched_or_mode_not_supported",
+            }
+            clean_result.setdefault("metadata", {})
+            clean_result["metadata"]["remediation_applied"] = False
 
     output = json.dumps(clean_result, indent=2)
 

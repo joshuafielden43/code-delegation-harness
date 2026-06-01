@@ -16,9 +16,86 @@ from pathlib import Path
 # Allow importing the script under test (no package yet)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from code_delegation_harness import normalize_result, _determine_status, _compute_diffs_and_stats, render_human_report
+from code_delegation_harness.harness import (
+    _parse_remediation_triggers,
+    _should_auto_remediate,
+    _extract_weakness_profile,
+    _compose_remediation_prompt,
+    _reconcile_remediation_result,
+)
 
 
 class TestNormalizeResult(unittest.TestCase):
+    def test_remediation_trigger_parse_and_gate(self):
+        triggers = _parse_remediation_triggers("partial,fail,missing_summary")
+        self.assertIn("partial_success", triggers)
+        self.assertIn("failure", triggers)
+        self.assertIn("missing_summary", triggers)
+
+        clean = {"status": "partial_success", "errors": []}
+        ok, reason = _should_auto_remediate(clean, triggers)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "partial_success")
+
+        clean2 = {"status": "success", "errors": [{"type": "missing_summary_marker", "message": "x"}]}
+        ok2, reason2 = _should_auto_remediate(clean2, triggers)
+        self.assertTrue(ok2)
+        self.assertEqual(reason2, "missing_summary")
+
+    def test_remediation_trigger_unknown_tokens_fall_back_to_defaults(self):
+        triggers = _parse_remediation_triggers("weird,unknown,tokens")
+        self.assertEqual(triggers, {"partial_success", "failure", "missing_summary"})
+
+    def test_remediation_gate_not_matched(self):
+        triggers = _parse_remediation_triggers("partial,fail,missing_summary")
+        clean = {"status": "success", "errors": []}
+        ok, reason = _should_auto_remediate(clean, triggers)
+        self.assertFalse(ok)
+        self.assertIsNone(reason)
+
+    def test_weakness_profile_and_prompt_overlay(self):
+        with tempfile.TemporaryDirectory() as td:
+            clean = {
+                "status": "partial_success",
+                "verification": "",
+                "change_summary": "",
+                "next_steps": "- still need integration test",
+                "errors": [{"type": "nonzero_exit", "message": "exit 1"}],
+            }
+            profile = _extract_weakness_profile(clean, td, "grok-build", 5, 5)
+            self.assertTrue(profile)
+            issues = [p.get("issue") for p in profile]
+            self.assertIn("missing_verification", issues)
+            self.assertIn("missing_change_summary", issues)
+
+            base = "BASE PROMPT"
+            p2 = _compose_remediation_prompt(base, profile, "partial_success")
+            self.assertIn("PASS 2 REMEDIATION MODE", p2)
+            self.assertIn("ATTACK THE ISSUE", p2)
+            self.assertIn("Do not redo validated completed work", p2)
+
+    def test_reconcile_prefers_improved_pass(self):
+        pass1 = {
+            "status": "partial_success",
+            "summary": "pass1",
+            "verification": "",
+            "change_summary": "",
+        }
+        pass2 = {
+            "status": "success",
+            "summary": "pass2",
+            "verification": "- pytest passed",
+            "change_summary": "- added checks",
+        }
+        weaknesses = [
+            {"issue": "missing_verification", "impact": "", "evidence": "", "target_prompt_section": "VERIFICATION"},
+            {"issue": "missing_change_summary", "impact": "", "evidence": "", "target_prompt_section": "CHANGE_SUMMARY"},
+        ]
+        merged, delta = _reconcile_remediation_result(pass1, pass2, weaknesses)
+        self.assertEqual(delta["selected_pass"], 2)
+        self.assertEqual(merged["status"], "success")
+        self.assertTrue(merged.get("remediation_applied"))
+
     def test_no_changes_path(self):
         """Exercise no_changes status when delegation reports zero file ops."""
         raw = {

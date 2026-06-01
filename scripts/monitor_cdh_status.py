@@ -130,7 +130,7 @@ def scan_target(target_dir: str, max_silence: int, pid_check: bool) -> list[dict
             try:
                 sm = StatusManager(sf)
                 if sm.load(require_owner_and_secure=False):  # monitor is read-only observer
-                    dead = sm.looks_dead(max_silence_seconds=max_silence)
+                    dead = sm.looks_dead(max_silence_seconds=max_silence, check_pid=pid_check)
                     if dead:
                         reason = f"no heartbeat >{max_silence}s (via StatusManager)"
             except Exception:
