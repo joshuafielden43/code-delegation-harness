@@ -130,7 +130,7 @@ def scan_target(target_dir: str, max_silence: int, pid_check: bool) -> list[dict
             try:
                 sm = StatusManager(sf)
                 if sm.load(require_owner_and_secure=False):  # monitor is read-only observer
-                    dead = sm.looks_dead(max_silence_seconds=max_silence)
+                    dead = sm.looks_dead(max_silence_seconds=max_silence, check_pid=pid_check)
                     if dead:
                         reason = f"no heartbeat >{max_silence}s (via StatusManager)"
             except Exception:
@@ -144,10 +144,15 @@ def scan_target(target_dir: str, max_silence: int, pid_check: bool) -> list[dict
 
         # Optional PID probe to suppress false positive on long-running inner calls
         pid_dead = False
-        if pid_check and isinstance(pid, int) and dead:
+        if pid_check and isinstance(pid, int):
             if not _pid_alive(pid):
                 pid_dead = True
                 reason = (reason or "") + " + PID not alive"
+            else:
+                # PID is alive → suppress the time-based dead flag (long model call, etc.)
+                if dead:
+                    dead = False
+                    reason = "PID alive (time-based silence ignored due to --pid-check)"
 
         entry = {
             "file": sf.name,

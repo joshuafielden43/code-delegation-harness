@@ -293,18 +293,34 @@ All per standing directive to drive the parallel resilience/synthesis work (item
 - [P2] `status.py:101` — insecure sentinel permission check did `pass` and still trusted the content (unlike the main status file path which fails closed).
 - [P2] `harness.py:1515` — resume short-circuit only covered `completed` + `max_wait_exceeded`; `failed` and `completed_no_changes` were still treated as resumable (risk of re-running already-final work).
 
-**All items fixed (complete, minimal, review-ready changes):**
-- `quiet` NameError: both call sites now use `getattr(args, "quiet", False)`. Exact repro command now succeeds (hits improved terminal short-circuit).
-- Sentinel timing: Removed the unconditional write from `register_crash_protection()`. Sentinel creation moved exclusively into the actual crash path `_mark_active_run_crashed` (still produces the lightweight 0o600 marker for signal-context resilience and --reap-dead).
-- Best-effort recovery now applies identical 64 KiB + `_is_owned_and_not_world_writable` guards before ingesting PROGRESS files into synthesized observations / grooming notes / result JSON. Insecure or oversized files are explicitly skipped with a note (no silent poisoning).
-- Insecure sentinel: now fail-closed exactly like status files (`_insecure` + return False; content never trusted).
-- Resume short-circuit: expanded to all known terminal states (`completed`, `failed`, `completed_no_changes`, `max_wait_exceeded`).
-- Added 3 targeted regression tests (sentinel-not-written-at-registration, insecure-sentinel-rejected, best-effort-security-guards). Full suite now 48/48.
-- Manual smoke of reviewer's exact `--resume` command + various --status / --prune paths confirmed clean.
-- Updated CHANGELOG (Unreleased) and this transcript.
+**Fixes applied in this pass (technical changes only):**
+- `quiet` NameError fixed in resume and wait paths.
+- Crash sentinel creation moved exclusively to actual crash paths (no longer written unconditionally at registration).
+- Best-effort synthesis now applies the same ownership/mode/size guards used elsewhere before ingesting PROGRESS files.
+- Insecure sentinel handling made fail-closed.
+- Resume short-circuit expanded to all terminal states.
 
-**Verification:** 48/48 tests pass. No behavior change for correct (owned, 0600) status/sentinel/checkpoint files. All reviewer repro cases now either work or fail closed with clear messages. Changes are backward-compatible under the documented threat model (private/trusted target_dir).
+Additional regression tests were added for the above cases.
 
-This round closes the remaining gaps identified after the 0.3.0 + grooming-notes work. The harness is now materially stronger on exactly the paths the reviewer exercised.
+**Note on scope:** This pass addressed the specific issues raised in the reviewer feedback. It does not represent a complete "all review issues closed with full verification" round. Further work on long-running resilience, launcher escape, and safe-target discipline continued on the `feat/long-running-visibility` branch. See the Unreleased section of CHANGELOG.md for the current state of that work.
+---
 
-**0.3.1 Release** — All reviewer fixes + grooming notes hardening packaged as 0.3.1 (see CHANGELOG.md). Version bumped in pyproject.toml + __init__.py. Annotated tag `v0.3.1` prepared. This is the version that should be used for the next round of dogfooding (tiny yt→youtube validation slice and beyond).
+## Current Dogfood Status (as of late May 2026)
+
+**Latest run**: v5 controlled widening (youtube + cli + cron clusters) on 0.3.1 — completed cleanly with honest `PARTIAL`, strong artifacts, and good cluster discovery by the agent. All gates passed.
+
+**Current run in flight** (launched by Honey):
+- Nuc casing micro-pass (tiny one-off to close the open nuc/NUC conflict flagged in v5).
+- Prompt: `tag-nuc-casing-micro.md`
+- Target: `/tmp/tag-nuc-casing`
+- Using the same strict discipline + 0.3.1 resilience.
+- Background + notify-on-complete.
+
+**Agreed direction**:
+- Tag normalization remains the active high-leverage thread (tightly controlled slices).
+- Proxmox third-pass refinements are still desired but deprioritized for now (user moving on it out of necessity).
+
+**Next expected action**: Honey will post artifacts + review of the nuc micro when complete. At that point we will decide on follow-up (apply any nuc decision, next small tag cluster, or other).
+
+All work continues to flow through the Dialogue channel. The nuc micro was prepared and launched as the immediate contained next step after v5 success.
+

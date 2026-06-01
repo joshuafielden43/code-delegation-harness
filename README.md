@@ -73,7 +73,29 @@ chmod +x bin/gcdh
 export PATH="$PWD/bin:$PATH"
 
 gcdh --help
-gcdh --quiet --task "..." --target-dir /path/to/project --output-file result.json
+gcdh --quiet --long-running --task "..." --target-dir /path/to/project --output-file result.json
+
+# For any real ambitious or long-running dogfood / implementation work (the primary use case),
+# use the full modern pattern. From constrained environments (this TUI, short CI wrappers, etc.)
+# the harness will auto-escape into tmux and auto-reap prior dead runs so the job survives
+# and the live target is never left in a partial broken state.
+
+# Easiest one-command launcher (recommended):
+#   ./scripts/gcdh-tmux --long-running --wait-for-completion --max-wait 86400 \
+#       --output-file /tmp/run.json --run-name "my-work" \
+#       --task "..." --target-dir /tmp/work
+
+# Or direct (auto-escape triggers automatically for --long-running in hostile launchers):
+gcdh --long-running --wait-for-completion --max-wait 86400 \
+     --output-file /tmp/run.json --run-name "my-work" --quiet \
+     --task "..." --target-dir /tmp/work
+
+# The harness now bakes in:
+# - Ruthless "job to the end + mandatory fresh verification (no stale data)" language
+# - Dynamic PROGRESS.json injection on every background probe
+# - Auto tmux escape from short-timeout outer wrappers (TUI 300s SIG15 etc.)
+# - Auto-reap of dead prior runs on every long launch (prevents leaving broken live state)
+# - Strict safe isolated workspace rule (never mutate live target until final promotion)
 ```
 
 **Installation**
@@ -115,6 +137,7 @@ This design makes it a strong primitive for building reliable delegation into la
 
 Long-running tasks are well supported:
 - Use `--timeout` (seconds) and `--max-turns` to give big jobs room to breathe.
+- For *ambitious long-running implementation* (the primary use case: e.g. extending skills like proxmox-control with real guest-exec/resize/discovery features + tests + promotion, all via harness only): add `--long-running --wait-for-completion --max-wait 86400 --run-name "my-ambitious-job"`. This enables bumped limits, dynamic PROGRESS.json injection on every background probe, and the ultra-ruthless baked-in "job to the end + mandatory fresh live verification (no stale VM refs) + no early summary" protocol.
 - Add `--wait-for-completion --max-wait 14400` (for example) and the wrapper will automatically poll until a background run finishes, then deliver the complete artifacts (full .json + .report.md + .patch + .run-meta.json).
 - Persistent `.cdh-run-<id>.status` files (with `last_heartbeat_at`, pid, full prompt) are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded / crashed). See `--status`, `--reap-dead`, `--resume`, the operational runbook in `docs/operations/`, and `scripts/monitor_cdh_status.py` for production monitoring and recovery.
 - Use `--status --target-dir /path` at any time to see both active and completed runs in that tree.
@@ -134,6 +157,37 @@ Use `--dry-run` (ideally with `--quiet`) before expensive or long-running delega
 This is extremely useful for agents and for humans reviewing scope.
 
 Combine with `--quiet` for the cleanest preview output.
+
+### Automatic Pass-2 Remediation (Counter-Prompt Mode)
+
+For underperforming first passes, you can enable a second targeted remediation pass:
+
+```bash
+gcdh \
+  --task "..." \
+  --target-dir /path/to/work \
+  --output-file /tmp/run.json \
+  --auto-remediate \
+  --remediate-on partial,fail,missing_summary \
+  --remediation-max-passes 1 \
+  --remediation-mode targeted-inversion
+```
+
+What it does:
+- Runs pass 1 normally.
+- If triggered (`partial_success`, `failure`, or missing summary marker), runs pass 2 automatically.
+- Builds a weakness profile from pass-1 output, then applies a bounded-aggressive targeted inversion overlay ("attack this issue") against weak spots only.
+- Preserves pass-1 baseline context and avoids redoing validated work.
+- Emits reconciliation metadata in final JSON:
+  - `pass_number`
+  - `parent_run_id`
+  - `remediation_reason`
+  - `weakness_profile`
+  - `remediation_applied`
+  - `remediation_delta`
+
+When `--output-file` is used, the pass-2 prompt is also persisted as:
+- `<output-stem>.pass2.prompt.txt`
 
 ## Strengths
 
@@ -171,6 +225,7 @@ The code in this repository is the current production version.
 Core implementation lives in `src/code_delegation_harness/harness.py` (with shims in `bin/gcdh`; `scripts/grok_delegate.py` is a legacy compatibility shim). You can also run with `python -m code_delegation_harness` after install or with PYTHONPATH=src.
 
 See `CHANGELOG.md` for release history. Full development notes live in the upstream development tree.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contributor credit.
 
 ## License
 

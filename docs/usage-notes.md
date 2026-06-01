@@ -22,6 +22,22 @@ See [Installation](installation.md) for how to get the command.
 - Always use `--output-file` for any non-trivial task.
 - Use `--quiet` (`-q`) for clean automation and agent-driven runs.
 - Use `--dry-run` (ideally with `--quiet`) before committing to long or expensive work.
+- **For any serious, ambitious, or long-running dogfood work** (full skill extensions, production-grade features, Proxmox-style appliance work, anything that needs to run for hours and actually finish): **use --long-running (or --keep-driving)**.
+
+  This is the single most important flag for real work. It:
+  - Bumps timeouts, turns, and waits to realistic multi-hour values.
+  - Injects the ruthless "job to the end" + mandatory fresh verification / anti-stale-data language.
+  - Enables dynamic fresh checkpoint injection on every background probe.
+
+  Example for real dogfood:
+  ```bash
+  gcdh --long-running --wait-for-completion --max-wait 14400 \
+       --task "Extend the existing proxmox-control skill with guest-exec + supporting fixes..." \
+       --target-dir ~/.hermes/skills/proxmox-control \
+       --output-file /tmp/proxmox-run.json
+  ```
+
+  You should use this for most real harness dogfood runs. Not every tiny one-off task needs it, but anything that matters does.
 
 ## Notes
 
@@ -49,6 +65,23 @@ bin/gcdh \
 You then open `/tmp/delegation-result.report.md` first for the high-signal review, and use the `.patch` for actual application or deeper diff review.
 
 ### Long-Running Tasks & Background Runs
+
+**For any real dogfood or ambitious implementation work, start with this pattern:**
+
+```bash
+bin/gcdh \
+  --long-running \
+  --wait-for-completion \
+  --max-wait 14400 \
+  --task "..." \
+  --target-dir /path/to/project \
+  --output-file /tmp/delegation-result.json \
+  --run-name "my-important-work" \
+  --quiet
+```
+
+`--long-running` is strongly recommended for almost all serious runs. It is the primary "make this job actually finish" switch.
+
 For big tasks that may exceed the inner agent's default timeout, use:
 
 ```bash
@@ -63,6 +96,56 @@ bin/gcdh \
   --poll-interval 120 \
   --run-name "my-big-refactor"
 ```
+
+**For ambitious multi-hour implementation (e.g. full Proxmox skill extensions with guest-exec, resize, discovery fixes, tests, promotion — the primary dogfood target):**
+
+### The Full "Worth Checking In" Recipe for Serious Work (especially from inside constrained environments like this TUI)
+
+When you are inside a short-timeout wrapper (the Grok Build TUI, grok CLI sessions, CI with hard kill timers, etc.) and you need a real LLM to do hours of ambitious implementation without the job dying and leaving partial broken state in the live target:
+
+1. **Always** use `--long-running` (or `--keep-driving`).
+2. Pair it with `--wait-for-completion --max-wait 86400 --output-file ... --run-name "something-good"`.
+3. When launched from a hostile short wrapper, the harness now **auto-detects** and **auto-escapes** the entire invocation into a detached tmux session (sets `GCDH_IN_TMUX` guard). The short-lived parent process exits cleanly so the outer 300s SIG15 cannot kill the real work. You (or the agent) attach later with `tmux attach -t <session>` or just let it cook and use `--status` / `--resume`.
+4. The harness also **auto-reaps** any dead prior runs (using heartbeat + PID probe) at the start of every new `--long-running` launch. Combined with the strict safe live-target mutation rule, this means previous crashes cannot leave the real skill/infra in a half-edited untestable state.
+5. The prompt now forces (as non-negotiable first action): create an isolated working copy of the live target inside the harness `--target-dir`. All edits happen there. Only a complete, tested, reviewable promotion ever touches the real location.
+
+Example that triggers the full power (auto-escape + auto-reap + safe workspace + ruthless drive):
+
+```bash
+gcdh --long-running \
+  --wait-for-completion \
+  --max-wait 86400 \
+  --output-file /tmp/proxmox-appliance-$(date +%s).json \
+  --run-name "proxmox-guest-exec-resize-full" \
+  --quiet \
+  --task "..." \
+  --target-dir /tmp/real-work-for-this-run \
+  --context "..." 
+```
+
+If you are already inside the TUI when you run the above, the harness will print that it is auto-escaping into tmux and do it. The job survives even if this TUI session is killed.
+
+This combination is what makes the harness actually capable of letting a strong LLM finish the fucking job without constant outer babysitting or manual repair passes on the target.
+
+Use this pattern for anything that matters. The harness is now built to make check-in / check-out sessions on real ambitious work actually worth it.
+
+```bash
+bin/gcdh \
+  --task "..." \
+  --target-dir /path/to/skill \
+  --output-file /tmp/proxmox-appliance-run.json \
+  --long-running \
+  --wait-for-completion \
+  --max-wait 86400 \
+  --run-name "proxmox-guest-exec-v1" \
+  --quiet
+```
+
+- `--long-running` (alias `--keep-driving`) is the new explicit "this is a serious long job that must finish" mode. It auto-bumps timeouts/turns/waits (4h/300/24h defaults if not already higher), enables an immediate first probe on wait entry + maximum dynamic PROGRESS.json injection on every background probe, and (when True) triggers an extra emphasis paragraph. The core ruthless anti-stale + job-to-the-end + "mandatory fresh live verification" language is now present on *every* invocation (unconditional in the built-in prompt); the flag signals long-running intent and adds the extra paragraph + operational bumps for ambitious Proxmox-style dogfood.
+- This combination (plus the agent's own frequent PROGRESS.json + the harness's anti-stale + checkpoint recovery) is what makes real end-to-end dogfood on live hardware succeed without babysitting.
+- Always pair with `--output-file` for the full reviewable artifact set (.json + .report.md + .patch + .run-meta.json).
+- Use `--status` and `--resume <run-id>` liberally across host restarts or long pauses.
+- The built-in prompt + dynamic injection now make "stale data" (e.g. old VM references) extremely unlikely; every invocation forces fresh verification as step 0.
 
 - `--wait-for-completion` makes the wrapper automatically poll until the background run finishes (instead of failing on the first timeout).
 - Use `--run-name` to give long runs a friendly label (appears in status files, --status output, and reports).

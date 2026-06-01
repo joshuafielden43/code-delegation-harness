@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Long-Running Visibility & Launcher Escape
+- Added support and strong recommendations for `--long-running` (and `--keep-driving` alias) as the primary mode for serious, ambitious dogfood and implementation work. This mode:
+  - Auto-bumps limits (`--timeout`, `--max-turns`, `--max-wait`, etc.) when set.
+  - Wires extra emphasis into the prompt for "job to the end" behavior.
+  - Enables automatic hostile launcher escape (tmux) when launched from short-timeout environments (Grok Build TUI, CI wrappers, etc.).
+  - Triggers aggressive auto-reap of prior dead runs on launch.
+- Added `scripts/gcdh-tmux` as a convenient one-command launcher that handles the tmux escape pattern safely.
+- Added **SAFE LIVE-TARGET MUTATION DISCIPLINE** (enforced in both the core prompt and key dogfood prompts): all development work must happen in an isolated copy inside the harness `--target-dir`. The only allowed mutation to a live target is a single final atomic promotion of a complete, tested, reviewable result. This directly addresses the recurring failure mode where a killed run left partial/broken edits in the real target (e.g. Proxmox skill) that then required manual outer repair before the next run could even validate.
+- Strengthened `--reap-dead` and status monitoring paths with `check_pid` support to reduce false positives on long-running jobs.
+- Improved `gcdh-tmux` command reconstruction to use safe quoting (via `shlex`) instead of raw `$*`, preventing injection risks and mangled tasks with special characters or quotes.
+- Various hygiene and correctness fixes in monitoring and status paths (e.g. `--pid-check` behavior in `monitor_cdh_status.py` now actually suppresses false positives when the PID is alive).
+
+### Dogfood Tooling & Ongoing Normalization Work
+- Added `tag-nuc-casing-micro.md` and companion `tag-nuc-casing-apply.md` prompts. These enable tightly scoped, high-discipline micro-passes to resolve specific open threads (such as the nuc casing conflict surfaced during v5) while maintaining all strict validation gates, rich PROGRESS checkpoints for reviewer notes, and the candidate → temp-snapshot → promote discipline.
+- Continued active dogfooding of small, controlled tag normalization slices on 0.3.1 (v5 controlled widening followed by nuc micro). This validates the harness for real many-small-edits grooming workloads and exercises the improved synthesis + reporting paths.
+
+### Repository & Release Hygiene
+- Significant worktree cleanup and improved tracking of active dogfood prompts and the single source of truth transcript.
+- Ongoing maintenance of the `MEETING_OF_MODELS_TRANSCRIPT.md` with current dogfood status to keep the authoritative record up to date.
+
+### Launcher Escape & Broken-Artifact Prevention (direct response to outer 300s SIG15 + manual repair incident)
+- Added **SAFE LIVE-TARGET MUTATION DISCIPLINE** (ruthless new section in the core `build_grok_prompt` + mirrored into the Proxmox appliance provisioning dogfood prompt). Live locations (real skill trees, infra control planes) are now *structurally* read-only for development. The harness contract is explicit: all work happens in an isolated copy inside the harness target_dir; the *only* allowed mutation to the live target is a single final atomic promotion of a complete, tested, reviewable patch set. A killed run must leave the live dogfood target byte-identical to launch state. This directly prevents the recurring failure where a harness death left partial guest-exec classification, wrong LXC exec paths (pct vs pvesh), and broken state in `~/.hermes/skills/proxmox-control/` that required an "outer Honey repair pass" before the next run could even smoke-test.
+- Automatic **HOSTILE LAUNCHER ESCAPE** recipe printed for every `--long-running` serious task when launched from inside short-timeout wrappers (the Grok Build TUI, grok CLI contexts, CI with hard 300s kills, etc.). Detects the environment and emits a ready-to-paste `tmux new-session -d ...` one-liner that survives the outer SIG15 wrapper + the exact safe-mutation reminder. This is the concrete product answer to "I'm making you ride a harness so that an actual LLM that can do the fucking job can be used."
+- These two changes together close the loop on the "harness dies → partial live edits → human has to fix the target by hand" pattern observed in the most recent Proxmox appliance provisioning dogfood run. Future long-running runs on real targets are now structurally prevented from leaving the kind of mess that forces outer intervention.
+
 ## [0.3.1] - 2026-05-30
 
 **Patch release: Post-0.3.0 hardening + grooming / normalization notes improvements.**

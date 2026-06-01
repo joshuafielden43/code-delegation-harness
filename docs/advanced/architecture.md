@@ -58,13 +58,14 @@ See [output-artifacts.md](../usage/output-artifacts.md) for the detailed schema.
 - **Strong working directory discipline**: The harness is obsessive about making sure the inner model only operates inside the exact directory the user specified.
 - **Reviewability first**: Every run should produce artifacts that a human (or another agent) can quickly evaluate without re-running the entire task.
 - **Lightweight and recoverable**: Background and long-running support is a first-class concern. The StatusManager + recovery logic exists specifically for this.
+- New (0.3.x+): Auto tmux escape from hostile short-timeout launchers (TUI, CI wrappers) when --long-running or --tmux is used. Auto-reap of dead prior runs on every serious launch. Strict safe isolated workspace + promotion-only mutation discipline enforced in prompts to guarantee no partial broken state is ever left in live dogfood targets.
 
 ## Data Flow (Simplified)
 
 1. User invokes `gcdh` with task + target directory.
 2. Harness builds a high-signal prompt that includes strict path rules and a required structured summary format.
 3. The inner model (via `grok` CLI or future adapters) is invoked.
-4. If it times out and `--wait-for-completion` is set, the harness enters a resilient polling loop using the status file.
+4. If it times out and `--wait-for-completion` is set, the harness enters a resilient polling loop using the status file. (Post-2026-05 hardening: every probe dynamically reloads + injects the *latest* agent `PROGRESS.json` + anti-stale instructions so long jobs make real incremental progress across interruptions. `--long-running` bumps all budgets and activates the full ruthless "job-to-the-end" prompt language.)
 5. On completion, raw output is parsed for the `=== DELEGATION SUMMARY ===` block. If the exact markers are missing (common on long runs), best-effort synthesis is performed using the agent's `PROGRESS.json` checkpoints. The result is marked with `summary_synthesized_from_checkpoint`.
 6. Results are normalized, diffs are computed, a patch is generated if needed, and all artifacts are written.
 

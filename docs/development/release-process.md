@@ -97,6 +97,11 @@ Go to: https://github.com/joshuafielden43/code-delegation-harness/releases/new
 - The first release involved significant last-minute documentation work and README grounding. Plan buffer time for this in future releases.
 - PRs created for testing the contribution flow (e.g., PR #1 and PR #2) were useful but highlighted that real work should eventually flow through the harness itself for dogfooding.
 
+## Companion Documents
+
+- `RELEASE_CHECKLIST.md` (repo root) — Practical, actionable checklist to use before every release.
+- `references/dogfood-prompts/README.md` — Current state and organization of active dogfood prompts.
+
 ## Future Improvements
 
 - Set up GitHub Actions + Trusted Publishing for automated releases (no manual token handling).
