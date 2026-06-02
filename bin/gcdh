@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+# Hardened gcdh launcher - always prefers the project venv Python (3.12)
+# This fixes the recurring Python 3.9 vs `str | None` syntax errors when
+# launched from Grok TUI, CI, or other short-timeout wrappers.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+
+PY="$VENV_PYTHON"
+if [ ! -x "$PY" ]; then
+    PY=python3
+    echo "[gcdh] Warning: No local venv found at $VENV_PYTHON, falling back to system python with local src" >&2
+fi
+
+# Always force-run the *local* source from this checkout (insert src first).
+# This guarantees edits/fixes here are what actually runs, even if the venv or global python has an old installed package.
+# Prevents "using wrong code" that caused immediate launch failures and un-captured crashes for Proxmox dogfood.
+exec "$PY" -c "
+import sys, runpy, os
+sys.path.insert(0, '$REPO_ROOT/src')
+os.environ.pop('PYTHONNOUSERSITE', None)
+runpy.run_module('code_delegation_harness', run_name='__main__')
+" "$@"
+
