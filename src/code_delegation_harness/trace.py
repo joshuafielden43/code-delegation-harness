@@ -278,6 +278,46 @@ def write_trace(trace: BuildAttemptTrace, research_dir: str) -> str:
     return str(trace_path)
 
 
+def prune_research_dir(research_dir: str, max_age_days: int = 7) -> dict:
+    """
+    Remove research artifacts older than max_age_days.
+
+    Covers:
+      - build-attempts/*.yaml  (trace files)
+      - *-stdout.txt / *-stderr.txt  (captured CLI output)
+
+    Returns a summary dict: {"removed": N, "kept": N, "errors": N}
+    Mirrors the --prune behaviour for status files.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    p = Path(research_dir)
+    if not p.exists():
+        return {"removed": 0, "kept": 0, "errors": 0}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    removed = kept = errors = 0
+
+    patterns = [
+        p / "build-attempts" / "*.yaml",
+        p / "*-stdout.txt",
+        p / "*-stderr.txt",
+    ]
+    for pattern in patterns:
+        for artifact in p.glob(str(pattern.relative_to(p))):
+            try:
+                mtime = datetime.fromtimestamp(artifact.stat().st_mtime, tz=timezone.utc)
+                if mtime < cutoff:
+                    artifact.unlink()
+                    removed += 1
+                else:
+                    kept += 1
+            except (OSError, ValueError, TypeError):
+                errors += 1
+
+    return {"removed": removed, "kept": kept, "errors": errors}
+
+
 def build_trace_from_result(
     *,
     intent_raw: str,

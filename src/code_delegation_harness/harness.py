@@ -34,6 +34,7 @@ from .trace import (
     build_trace_from_result, write_trace, write_output_to_research, ensure_research_dir,
 )
 from .stanzas import load_stanza, STANZA_VERSION
+from .smoke import diff_manifest, run_smoke_tests
 # Lazy imports for intake gate (requires [intake] extras for Anthropic backend).
 # Imported at module level so tests can patch them cleanly.
 try:
@@ -2278,6 +2279,9 @@ def main():
     parser.add_argument("--resume", help="Resume waiting for a previous background run using its run_id or path to a .status file")
     parser.add_argument("--dry-run", action="store_true", help="Preview the full prompt, effective flags, target directory, and expected output artifacts without launching the inner agent or writing any status/output files")
     parser.add_argument("--prune", type=int, nargs="?", const=7, help="Prune completed/failed status files older than N days (default: 7)")
+    parser.add_argument("--prune-research", type=int, nargs="?", const=7, metavar="N",
+                        help="Prune research/tmp artifacts (traces, stdout/stderr) older than N days (default: 7). "
+                             "Use --research-dir to specify a non-default location.")
     parser.add_argument("--reap-dead", action="store_true", help="Scan for background runs that have gone silent (no heartbeat) and mark them as crashed. Useful after host reboots or wrapper deaths.")
     parser.add_argument("--detach", action="store_true", help="Launch in detached/daemon mode (uses nohup + setsid style so the harness survives terminal close and parent death better). Best used with --wait-for-completion or when you want true fire-and-forget.")
     parser.add_argument("--tmux", "--use-tmux", dest="use_tmux", action="store_true", help="Force launch inside a detached tmux session (survives outer short-timeout wrappers like this TUI / 300s SIG15 kills). Strongly recommended (or let --long-running auto-escape) for any serious work from constrained environments. Implies --long-running behavior for the inner job.")
@@ -2406,6 +2410,7 @@ def main():
         args.status or
         args.resume or
         (args.prune is not None) or
+        (getattr(args, "prune_research", None) is not None) or
         args.dry_run or
         args.reap_dead
     )
@@ -2776,6 +2781,19 @@ def main():
         prune_completed_status_files(target_dir, max_age_days=args.prune)
         sys.exit(0)
 
+    if getattr(args, "prune_research", None) is not None:
+        target_dir = os.path.abspath(args.target_dir) if args.target_dir else "."
+        rdir = getattr(args, "research_dir", None) or str(Path(target_dir) / "research" / "tmp")
+        days = args.prune_research
+        from .trace import prune_research_dir
+        summary = prune_research_dir(rdir, max_age_days=days)
+        if verbosity >= 1:
+            print(f"[cdh] Pruned research dir: {rdir} (>{days}d)")
+            print(f"      removed={summary['removed']}  kept={summary['kept']}  errors={summary['errors']}")
+        elif summary["removed"] > 0:
+            print(f"[cdh] Pruned {summary['removed']} research artifact(s) from {rdir}")
+        sys.exit(0)
+
     if args.reap_dead:
         target_dir = os.path.abspath(args.target_dir) if getattr(args, "target_dir", None) else "."
         reaped = 0
@@ -2889,13 +2907,31 @@ def main():
                 provider=orch_provider,
                 cli_name="grok",   # execution CLI name for CLI backend
             )
-            intake_result = run_intake_gate(
-                args.task,
-                orchestrator=orchestrator,
-                model=orch_model,
-                timeout=orch_timeout,
-                quiet=getattr(args, "quiet", False),
+            # Wrap in RetryPolicy — transient network hiccups should not immediately degrade
+            # the entire run. 3 attempts, 2s base delay. ImportError is not retryable.
+            _intake_retry = RetryPolicy(max_attempts=3, base_delay=2.0, max_delay=10.0)
+
+            def _do_intake():
+                return run_intake_gate(
+                    args.task,
+                    orchestrator=orchestrator,
+                    model=orch_model,
+                    timeout=orch_timeout,
+                    quiet=getattr(args, "quiet", False),
+                )
+
+            _intake_ok, _intake_outcome = _intake_retry.run(
+                _do_intake,
+                on_error=lambda err, attempt: (
+                    print(f"[cdh:intake] attempt {attempt} failed ({type(err).__name__}: {err}); retrying...")
+                    if verbosity >= 1 else None
+                ),
             )
+            if _intake_ok:
+                intake_result = _intake_outcome
+            else:
+                raise _intake_outcome  # re-raise last error for unified handling below
+
         except ImportError as intake_exc:
             if verbosity >= 1:
                 print(f"[cdh] Warning: intake extras not installed ({intake_exc}). "
@@ -2904,8 +2940,8 @@ def main():
             _intake_error = f"import_error: {intake_exc}"
         except Exception as intake_exc:
             if verbosity >= 1:
-                print(f"[cdh] Warning: intake gate unavailable ({type(intake_exc).__name__}: {intake_exc}). "
-                      f"Passing raw prompt through.")
+                print(f"[cdh] Warning: intake gate unavailable after retries "
+                      f"({type(intake_exc).__name__}: {intake_exc}). Passing raw prompt through.")
             intake_result = None
             _intake_error = f"{type(intake_exc).__name__}: {str(intake_exc)[:200]}"
     else:
@@ -3152,6 +3188,11 @@ def main():
     if launch_run_id and "run_id" not in clean_result:
         clean_result["run_id"] = launch_run_id
 
+    # Initialise manifest diff results early so remediation can reference them (Phase 5 populates them below)
+    manifest_found: list[str] = []
+    manifest_missing: list[str] = []
+    smoke_result = None
+
     # Optional automatic pass-2 remediation.
     remediation_prompt_path = None
     if args.auto_remediate and args.remediation_max_passes > 0:
@@ -3168,6 +3209,14 @@ def main():
         }
         if should_remediate and args.remediation_mode == "targeted-inversion":
             weakness_profile = _extract_weakness_profile(clean_result, target_dir, args.model, args.timeout, args.max_turns)
+            # Inject manifest gaps as explicit weakness items (ground-truth, not LLM inference)
+            for missing_name in manifest_missing:
+                weakness_profile.append({
+                    "issue": "spec_coverage",
+                    "evidence": f"Required artifact not found on disk: {missing_name}",
+                    "impact": "Spec requirement unfulfilled.",
+                    "target_prompt_section": "FILES_CREATED",
+                })
             pass2_prompt = _compose_remediation_prompt(prompt, weakness_profile, remediation_reason or "degraded_output")
             if args.output_file:
                 out_base = Path(args.output_file)
@@ -3270,6 +3319,35 @@ def main():
             clean_result["metadata"]["remediation_applied"] = False
 
     # -------------------------------------------------------------------------
+    # Phase 5: Manifest diffing — ground-truth scan vs. expected artifacts
+    # -------------------------------------------------------------------------
+    if intake_result and intake_result.manifest_expected:
+        try:
+            manifest_found, manifest_missing = diff_manifest(
+                intake_result.manifest_expected, target_dir
+            )
+            if verbosity >= 1:
+                print(f"[cdh:manifest] found={len(manifest_found)} missing={len(manifest_missing)}")
+                if manifest_missing:
+                    print(f"[cdh:manifest] missing: {', '.join(manifest_missing)}")
+            # Run smoke tests against found artifacts
+            smoke_result = run_smoke_tests(
+                expected=intake_result.manifest_expected,
+                found_names=manifest_found,
+                target_dir=target_dir,
+            )
+            if verbosity >= 1 and smoke_result.tier:
+                print(f"[cdh:smoke] highest tier passed: {smoke_result.tier}")
+            # Surface in result JSON
+            clean_result["manifest_found"] = manifest_found
+            clean_result["manifest_missing"] = manifest_missing
+            if smoke_result:
+                clean_result["smoke"] = smoke_result.to_dict()
+        except Exception as smoke_err:
+            if verbosity >= 1:
+                print(f"[cdh] Warning: manifest diff / smoke tests failed: {smoke_err}")
+
+    # -------------------------------------------------------------------------
     # Emit Build Attempt Trace (D-07: every invocation produces a trace)
     # -------------------------------------------------------------------------
     trace_path: Optional[str] = None
@@ -3314,47 +3392,28 @@ def main():
             )
             for w in weakness_profile
         ]
+        # manifest_gaps_injected: use ground-truth filesystem scan (Phase 5), not model summary inference
         attack_block = AttackBlock(
             generator="failure" if pass1_exit in ("fail", "timeout") else "success",
             critique=critique_items,
-            manifest_gaps_injected=[
-                a.name for a in (intake_result.manifest_expected if intake_result else [])
-                if a.name not in (clean_result.get("changes", {}).get("created", []) or [])
-                   + (clean_result.get("changes", {}).get("modified", []) or [])
-            ] if intake_result else [],
+            manifest_gaps_injected=manifest_missing,  # real filesystem diff
             attack_frame_from_intake=intake_result.attack_frame_generated if intake_result else None,
         )
 
-        # Manifest block
-        manifest_block = ManifestBlock(
-            expected=[
-                type("_A", (), {"type": a.type, "name": a.name, "description": a.description})()
-                for a in (intake_result.manifest_expected if intake_result else [])
-            ],
-            found=(clean_result.get("changes", {}).get("created", []) or [])
-                  + (clean_result.get("changes", {}).get("modified", []) or []),
-        ) if intake_result else ManifestBlock()
-        # Import proper type
+        # Manifest block — populated from real filesystem scan (Phase 5)
         from .trace import ArtifactExpectation as _TraceArtifact, ManifestBlock as _ManifestBlock
         trace_manifest = _ManifestBlock(
             expected=[
                 _TraceArtifact(type=a.type, name=a.name, description=a.description)
                 for a in (intake_result.manifest_expected if intake_result else [])
             ],
-            found=(clean_result.get("changes", {}).get("created", []) or [])
-                  + (clean_result.get("changes", {}).get("modified", []) or []),
-            missing=[
-                a.name for a in (intake_result.manifest_expected if intake_result else [])
-                if a.name not in (
-                    (clean_result.get("changes", {}).get("created", []) or [])
-                    + (clean_result.get("changes", {}).get("modified", []) or [])
-                )
-            ],
+            found=manifest_found,
+            missing=manifest_missing,
         )
 
         verdict = VerdictBlock(
             outcome="passed" if clean_result.get("success") and not clean_result.get("errors") else "failed",
-            smoke_tier=None,
+            smoke_tier=smoke_result.tier if smoke_result else None,
         )
 
         normalized_via = NormalizedVia(

@@ -25,7 +25,29 @@ import re
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Normalization prompt versioning (OQ-02)
+# ---------------------------------------------------------------------------
+
+NORMALIZATION_PROMPT_VERSION = "normalization-v1.0"
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+def load_normalization_prompt(version: str = NORMALIZATION_PROMPT_VERSION) -> str:
+    """Load the normalization system prompt from the versioned file."""
+    filename = f"{version}.txt"
+    path = _PROMPTS_DIR / filename
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    # Fallback: inline minimal prompt if file missing (shouldn't happen in installed package)
+    return (
+        "You are an intake normalizer. Given a raw coding task, produce:\n"
+        "1. intent_normalized — structured, explicit rewrite\n"
+        "2. manifest_expected — typed artifact list\n"
+        "3. attack_frame_generated — adversarial critique template"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,77 +123,99 @@ class OrchestratorBackend(ABC):
 
 class AnthropicOrchestratorBackend(OrchestratorBackend):
     """
-    Calls the Anthropic API directly using the anthropic SDK + instructor
-    for structured output. Requires pip install "cdh[intake]".
+    Calls the Anthropic API directly using the anthropic SDK with native tool_use
+    for structured output. No instructor dependency.
+
+    Requires: pip install "code-delegation-harness[intake]"
+    (only needs `anthropic`; instructor is no longer required)
     """
+
+    # Tool schema for native tool_use structured output (OQ-04)
+    _TOOL_SCHEMA = {
+        "name": "intake_result",
+        "description": "Structured intake normalization result",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "intent_normalized": {
+                    "type": "string",
+                    "description": (
+                        "The task rewritten as a structured, explicit prompt. "
+                        "Direct imperative form. No hedging language."
+                    ),
+                },
+                "manifest_expected": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["file", "function", "class", "interface", "config", "library"]},
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                        "required": ["type", "name", "description"],
+                    },
+                },
+                "attack_frame_generated": {
+                    "type": "string",
+                    "description": (
+                        "Pre-computed adversarial critique template. "
+                        "Specific to this task: weakest assumptions, likely spec gaps, "
+                        "skipped error paths, implicit dependencies."
+                    ),
+                },
+            },
+            "required": ["intent_normalized", "manifest_expected", "attack_frame_generated"],
+        },
+    }
 
     def run_intake(self, raw_prompt: str, model: str, timeout: int = 30) -> IntakeResult:
         try:
             import anthropic
-            import instructor
-            from pydantic import BaseModel, Field
-
-            class _Artifact(BaseModel):
-                type: str = Field(default="file", description="file|function|class|interface|config|library")
-                name: str
-                description: str
-
-            class _IntakeOutput(BaseModel):
-                intent_normalized: str = Field(
-                    description=(
-                        "The user's intent rewritten as a structured, explicit prompt. "
-                        "Include: task objective, working directory if mentioned, explicit "
-                        "artifact list, constraints. Be precise — no hedging language."
-                    )
-                )
-                manifest_expected: list[_Artifact] = Field(
-                    default_factory=list,
-                    description="Typed list of artifacts the task explicitly or implicitly requires.",
-                )
-                attack_frame_generated: str = Field(
-                    description=(
-                        "Pre-computed adversarial critique template for this task. "
-                        "Written as an attack prompt: identify the weakest assumptions, "
-                        "the most likely gaps in spec coverage, the error paths most likely "
-                        "to be skipped, and any implicit dependencies. Be specific to this task."
-                    )
-                )
-
-            client = instructor.from_anthropic(anthropic.Anthropic())
-            result = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "You are an intake normalizer for a code delegation harness. "
-                            "Given the user's raw coding task below, produce:\n"
-                            "1. A structured, explicit normalized prompt\n"
-                            "2. A typed manifest of expected artifacts\n"
-                            "3. A pre-generated adversarial attack frame\n\n"
-                            f"RAW TASK:\n{raw_prompt}"
-                        ),
-                    }
-                ],
-                response_model=_IntakeOutput,
-            )
-            return IntakeResult(
-                intent_detection="human",
-                was_normalized=True,
-                intent_normalized=result.intent_normalized,
-                manifest_expected=[
-                    ArtifactExpectation(type=a.type, name=a.name, description=a.description)
-                    for a in result.manifest_expected
-                ],
-                attack_frame_generated=result.attack_frame_generated,
-                normalized_via_model=model,
-            )
         except ImportError:
             raise RuntimeError(
                 "Anthropic backend requires the [intake] extra: "
                 "pip install 'code-delegation-harness[intake]'"
             )
+
+        system_prompt = load_normalization_prompt(NORMALIZATION_PROMPT_VERSION)
+        client = anthropic.Anthropic()
+
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system_prompt,
+            tools=[self._TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "intake_result"},
+            messages=[{"role": "user", "content": f"RAW TASK:\n{raw_prompt}"}],
+        )
+
+        # Extract tool_use block
+        tool_block = next(
+            (b for b in response.content if getattr(b, "type", None) == "tool_use"),
+            None,
+        )
+        if tool_block is None:
+            raise RuntimeError("Anthropic API did not return a tool_use block")
+
+        data = tool_block.input
+        return IntakeResult(
+            intent_detection="human",
+            was_normalized=True,
+            intent_normalized=data.get("intent_normalized", raw_prompt),
+            manifest_expected=[
+                ArtifactExpectation(
+                    type=a.get("type", "file"),
+                    name=a.get("name", ""),
+                    description=a.get("description", ""),
+                )
+                for a in (data.get("manifest_expected") or [])
+                if isinstance(a, dict)
+            ],
+            attack_frame_generated=data.get("attack_frame_generated"),
+            normalized_via_model=model,
+            normalized_via_prompt_version=NORMALIZATION_PROMPT_VERSION,
+        )
 
 
 class CLIOrchestratorBackend(OrchestratorBackend):
@@ -186,14 +230,16 @@ class CLIOrchestratorBackend(OrchestratorBackend):
         self.extra_args = extra_args or []
 
     def run_intake(self, raw_prompt: str, model: str, timeout: int = 30) -> IntakeResult:
+        # Build intake prompt from versioned file + JSON output instruction
+        normalization_system = load_normalization_prompt(NORMALIZATION_PROMPT_VERSION)
         intake_prompt = (
-            "You are an intake normalizer. Given the user's raw coding task, "
-            "respond ONLY with a JSON object (no prose, no markdown) with exactly these keys:\n"
-            '  "intent_normalized": string — task rewritten as explicit structured prompt\n'
+            f"{normalization_system}\n\n"
+            "Respond ONLY with a JSON object (no prose, no markdown, no code fences) "
+            "with exactly these keys:\n"
+            '  "intent_normalized": string\n'
             '  "manifest_expected": array of {"type": string, "name": string, "description": string}\n'
-            '  "attack_frame_generated": string — adversarial critique template for this task\n\n'
-            f"RAW TASK:\n{raw_prompt}\n\n"
-            "Respond with only the JSON object."
+            '  "attack_frame_generated": string\n\n'
+            f"RAW TASK:\n{raw_prompt}"
         )
 
         cmd = [self.cli_name, "-p", intake_prompt, "-m", model,
@@ -224,6 +270,7 @@ class CLIOrchestratorBackend(OrchestratorBackend):
                     ],
                     attack_frame_generated=data.get("attack_frame_generated"),
                     normalized_via_model=model,
+                    normalized_via_prompt_version=NORMALIZATION_PROMPT_VERSION,
                 )
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
             pass

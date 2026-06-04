@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.code_delegation_harness.intake import (
+    NORMALIZATION_PROMPT_VERSION,
     ArtifactExpectation,
     CLIOrchestratorBackend,
     IntakeResult,
@@ -10,6 +11,7 @@ from src.code_delegation_harness.intake import (
     _extract_json_from_cli_output,
     detect_prompt_type,
     get_orchestrator,
+    load_normalization_prompt,
     run_intake_gate,
 )
 
@@ -166,6 +168,32 @@ class TestExtractJsonFromCliOutput(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestNormalizationPromptVersioning(unittest.TestCase):
+    """Tests for OQ-02: normalization prompt versioning."""
+
+    def test_version_constant_is_set(self):
+        self.assertEqual(NORMALIZATION_PROMPT_VERSION, "normalization-v1.0")
+
+    def test_load_returns_non_empty_string(self):
+        prompt = load_normalization_prompt()
+        self.assertGreater(len(prompt), 50)
+
+    def test_load_covers_three_outputs(self):
+        prompt = load_normalization_prompt().lower()
+        self.assertIn("intent_normalized", prompt)
+        self.assertIn("manifest_expected", prompt)
+        self.assertIn("attack_frame_generated", prompt)
+
+    def test_explicit_version_loads_same_as_default(self):
+        default = load_normalization_prompt()
+        explicit = load_normalization_prompt(NORMALIZATION_PROMPT_VERSION)
+        self.assertEqual(default, explicit)
+
+    def test_unknown_version_falls_back_gracefully(self):
+        result = load_normalization_prompt("normalization-v99.9")
+        self.assertGreater(len(result), 10)  # fallback inline prompt
+
+
 class TestGetOrchestrator(unittest.TestCase):
     def test_cli_provider_returns_cli_backend(self):
         orch = get_orchestrator(provider="cli")
@@ -179,16 +207,16 @@ class TestGetOrchestrator(unittest.TestCase):
             orch = get_orchestrator(provider="auto")
             self.assertIsInstance(orch, CLIOrchestratorBackend)
 
-    def test_anthropic_provider_raises_without_extras(self):
-        """Anthropic backend must raise clearly if [intake] extras not installed."""
+    def test_anthropic_provider_raises_without_sdk(self):
+        """Anthropic backend must raise clearly if `anthropic` SDK not installed."""
         from src.code_delegation_harness.intake import AnthropicOrchestratorBackend
         orch = AnthropicOrchestratorBackend()
         with self.assertRaises(Exception) as ctx:
-            # This will raise either ImportError (no anthropic) or RuntimeError (our wrapper)
+            # Will raise ImportError (no anthropic) or RuntimeError (our wrapper)
             orch.run_intake("test task", model="claude-opus-4-8")
+        msg = str(ctx.exception).lower()
         self.assertTrue(
-            "intake" in str(ctx.exception).lower() or "anthropic" in str(ctx.exception).lower()
-            or "import" in str(ctx.exception).lower()
+            "intake" in msg or "anthropic" in msg or "import" in msg
         )
 
 
