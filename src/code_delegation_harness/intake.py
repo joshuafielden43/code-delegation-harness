@@ -231,27 +231,37 @@ class CLIOrchestratorBackend(OrchestratorBackend):
 
 
 def _extract_json_from_cli_output(text: str) -> Optional[dict]:
-    """Extract the first valid JSON object from CLI output (may be wrapped)."""
-    # Try direct parse first
+    """Extract the first valid JSON object from CLI output (may be wrapped in an envelope)."""
+    # Try direct parse first; if it succeeds AND looks like an intake result, return it.
+    # If it looks like a CLI envelope (has "text" or "content" key whose value is JSON), unwrap.
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            # Check if this is already the intake result (has expected keys)
+            if "intent_normalized" in parsed or "manifest_expected" in parsed:
+                return parsed
+            # Otherwise check for CLI envelope with a text/content field containing JSON
+            inner_str = parsed.get("text") or parsed.get("content") or ""
+            if inner_str and isinstance(inner_str, str):
+                try:
+                    inner = json.loads(inner_str)
+                    if isinstance(inner, dict):
+                        return inner
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            # Return whatever we got (let caller decide if keys are present)
+            return parsed
     except (json.JSONDecodeError, ValueError):
         pass
-    # Try to find a JSON object in the output
+    # Try to find a JSON object embedded in prose
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group())
+            parsed = json.loads(match.group())
+            if isinstance(parsed, dict):
+                return parsed
         except (json.JSONDecodeError, ValueError):
             pass
-    # Try "text" field from CLI envelope
-    try:
-        envelope = json.loads(text)
-        inner = envelope.get("text") or envelope.get("content") or ""
-        if inner:
-            return json.loads(inner)
-    except (json.JSONDecodeError, ValueError, AttributeError):
-        pass
     return None
 
 

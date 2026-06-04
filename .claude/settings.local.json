@@ -23,7 +23,13 @@
       "Bash(python3 -m src.code_delegation_harness --task \"test task\" --target-dir /tmp --dry-run)",
       "Bash(python3 -m src.code_delegation_harness --help)",
       "Bash(git -C /Users/jcf/Projects/code-harness-claude add -A)",
-      "Bash(git -C /Users/jcf/Projects/code-harness-claude status --short)"
+      "Bash(git -C /Users/jcf/Projects/code-harness-claude status --short)",
+      "Bash(mkdir -p /Users/jcf/.claude/projects/-Users-jcf-Projects-code-harness-claude/memory/)",
+      "Bash(xargs ls -t)",
+      "Bash(python -m pytest tests/test_intake.py -v)",
+      "Bash(python -m pytest tests/test_trace.py -v)",
+      "Bash(xargs cat)",
+      "Bash(git -C /Users/jcf/Projects/code-harness-claude commit -m ' *)"
     ]
   }
 }

@@ -250,7 +250,10 @@ def _dict_to_yaml(d, indent: int) -> str:
 def ensure_research_dir(research_dir: str) -> Path:
     p = Path(research_dir)
     p.mkdir(parents=True, exist_ok=True, mode=0o700)
-    (p / "build-attempts").mkdir(exist_ok=True, mode=0o700)
+    p.chmod(0o700)  # Fix perms even on pre-existing dirs (D-02 from MoM review)
+    ba = p / "build-attempts"
+    ba.mkdir(exist_ok=True, mode=0o700)
+    ba.chmod(0o700)
     return p
 
 

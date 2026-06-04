@@ -50,6 +50,21 @@ class TestEnsureResearchDir(unittest.TestCase):
             ensure_research_dir(research)  # should not raise
 
 
+class TestEnsureResearchDirPermFix(unittest.TestCase):
+    """D-02 (MoM): ensure_research_dir fixes permissions on pre-existing dirs."""
+
+    def test_fixes_loose_permissions_on_reuse(self):
+        with tempfile.TemporaryDirectory() as d:
+            research = os.path.join(d, "research", "tmp")
+            ensure_research_dir(research)
+            # Manually loosen permissions to simulate bad state
+            os.chmod(research, 0o777)
+            # Second call should fix them back to 0o700
+            ensure_research_dir(research)
+            mode = oct(os.stat(research).st_mode)
+            self.assertIn("700", mode)
+
+
 class TestWriteOutputToResearch(unittest.TestCase):
     def test_writes_file_and_returns_digest(self):
         with tempfile.TemporaryDirectory() as d:

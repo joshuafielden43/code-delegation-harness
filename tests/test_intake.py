@@ -7,6 +7,7 @@ from src.code_delegation_harness.intake import (
     CLIOrchestratorBackend,
     IntakeResult,
     _degraded_intake,
+    _extract_json_from_cli_output,
     detect_prompt_type,
     get_orchestrator,
     run_intake_gate,
@@ -124,6 +125,45 @@ class TestRunIntakeGate(unittest.TestCase):
         long_reason = "x" * 1000
         result = _degraded_intake("task", long_reason)
         self.assertLessEqual(len(result.degraded_reason), 300)
+
+
+class TestExtractJsonFromCliOutput(unittest.TestCase):
+    """Tests for the CLI response JSON extractor (Q-03 MoM)."""
+
+    def test_valid_json_direct(self):
+        data = _extract_json_from_cli_output('{"intent_normalized": "TASK: foo", "manifest_expected": []}')
+        self.assertIsNotNone(data)
+        self.assertEqual(data["intent_normalized"], "TASK: foo")
+
+    def test_json_wrapped_in_prose(self):
+        text = 'Here is the structured output:\n{"intent_normalized": "TASK: bar", "manifest_expected": []}'
+        data = _extract_json_from_cli_output(text)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["intent_normalized"], "TASK: bar")
+
+    def test_json_in_envelope(self):
+        import json
+        inner = json.dumps({"intent_normalized": "TASK: baz", "manifest_expected": []})
+        envelope = json.dumps({"text": inner})
+        data = _extract_json_from_cli_output(envelope)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["intent_normalized"], "TASK: baz")
+
+    def test_no_json_returns_none(self):
+        result = _extract_json_from_cli_output("I could not parse your request.")
+        self.assertIsNone(result)
+
+    def test_malformed_json_returns_none(self):
+        result = _extract_json_from_cli_output('{"intent_normalized": "broken"')
+        self.assertIsNone(result)
+
+    def test_empty_string_returns_none(self):
+        result = _extract_json_from_cli_output("")
+        self.assertIsNone(result)
+
+    def test_truncated_json_returns_none(self):
+        result = _extract_json_from_cli_output('{"intent_normalized": "foo", "manifest')
+        self.assertIsNone(result)
 
 
 class TestGetOrchestrator(unittest.TestCase):
