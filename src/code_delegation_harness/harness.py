@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Grok Coding Delegate
+Code Delegation Harness
 
-A focused, production-oriented harness for delegating coding work to Grok
-in a clean, structured way. Produces high-quality reviewable artifacts
-(JSON + human report + ready-to-apply patch) even for long-running tasks.
+A model-agnostic harness for delegating coding work to any coding CLI
+(Claude Code, Grok Code, Codex, Agy, others) while keeping the primary
+agent or orchestration layer clean.
 
-Designed to keep the primary persona clean while getting real implementation
-work done reliably.
+Produces high-quality reviewable artifacts (JSON + human report + patch)
+and a canonical build attempt trace per run.
 """
 
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,19 @@ from threading import Event
 from typing import Optional, Tuple
 
 from .status import StatusManager, register_crash_protection, _is_owned_and_not_world_writable
+from .trace import (
+    BuildAttemptTrace, RunRecord, AttackBlock, VerdictBlock, ManifestBlock,
+    ConfirmationBlock, NormalizedVia, CritiqueItem,
+    build_trace_from_result, write_trace, write_output_to_research, ensure_research_dir,
+)
+from .stanzas import load_stanza, STANZA_VERSION
+# Lazy imports for intake gate (requires [intake] extras for Anthropic backend).
+# Imported at module level so tests can patch them cleanly.
+try:
+    from .intake import run_intake_gate, get_orchestrator
+except ImportError:  # pragma: no cover
+    run_intake_gate = None  # type: ignore[assignment]
+    get_orchestrator = None  # type: ignore[assignment]
 
 
 class RetryPolicy:
@@ -67,8 +81,8 @@ class RetryPolicy:
         return False, last_err
 
 
-def build_grok_prompt(task: str, target_dir: str, context: Optional[str] = None, constraints: Optional[str] = None, long_running: bool = False) -> str:
-    """Construct a strong, code-first prompt for Grok with structured final output."""
+def build_execution_prompt(task: str, target_dir: str, context: Optional[str] = None, constraints: Optional[str] = None, long_running: bool = False) -> str:
+    """Construct a strong, code-first execution prompt with structured final output."""
     prompt = f"""You are acting as a code-first implementation harness for a coding task.
 
 TASK:
@@ -225,16 +239,28 @@ This specific launch was explicitly marked for very long-running work. The harne
     return prompt
 
 
-def call_model_headless(prompt: str, cwd: str, model: str = "grok-build", timeout: int = 1800, max_turns: int = 60) -> dict:
+# Keep old name as alias for backward compatibility with any external callers.
+build_grok_prompt = build_execution_prompt
+
+
+def call_model_headless(
+    prompt: str,
+    cwd: str,
+    model: str = "grok-build",
+    timeout: int = 1800,
+    max_turns: int = 60,
+    research_dir: Optional[str] = None,
+    run_id: Optional[str] = None,
+    pass_label: str = "pass",
+) -> dict:
     """
-    Call the model in headless mode (via external CLI) and return structured results.
+    Call the execution CLI in headless mode and return structured results.
 
-    The backend is driven by the --model flag (default "grok-build"). This function
-    is intentionally a thin adapter so the harness can remain model-agnostic and
-    work as a universal delegation wrapper (primary for Grok, reliable adapter for others).
+    Model-agnostic adapter: driven by the --model flag. Works with grok, claude-code,
+    codex, agy, and any CLI that accepts -p <prompt> --cwd <dir> -m <model> style args.
 
-    Supports long-running tasks by allowing configurable timeouts (default 30 minutes).
-    When a task exceeds the timeout, the inner agent may continue in background mode.
+    When research_dir is provided, full stdout/stderr are written there (0600) and
+    SHA-256 digests are returned in the result dict instead of inline content.
     """
     cmd = [
         "grok",
@@ -258,24 +284,56 @@ def call_model_headless(prompt: str, cwd: str, model: str = "grok-build", timeou
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
+        # Route full stdout/stderr to research/tmp; keep only SHA-256 digests inline (D-07).
+        stdout_digest: Optional[str] = None
+        stderr_digest: Optional[str] = None
+        stdout_path: Optional[str] = None
+        stderr_path: Optional[str] = None
+        if research_dir and run_id:
+            try:
+                eff_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", pass_label).strip("-") or "pass"
+                if stdout:
+                    stdout_path, stdout_digest = write_output_to_research(
+                        research_dir, run_id, f"{eff_label}-stdout", stdout
+                    )
+                if stderr:
+                    stderr_path, stderr_digest = write_output_to_research(
+                        research_dir, run_id, f"{eff_label}-stderr", stderr
+                    )
+            except (OSError, RuntimeError, ValueError, TypeError):
+                pass
+
         # Try to parse JSON output
         try:
             data = json.loads(stdout)
             data["raw_stdout"] = stdout
             data["stderr"] = stderr
             data["exit_code"] = result.returncode
+            if stdout_digest:
+                data["stdout_digest"] = stdout_digest
+                data["stdout_path"] = stdout_path
+            if stderr_digest:
+                data["stderr_digest"] = stderr_digest
+                data["stderr_path"] = stderr_path
             return data
         except json.JSONDecodeError:
-            return {
+            d = {
                 "text": stdout,
                 "stderr": stderr,
                 "exit_code": result.returncode,
                 "parse_error": True,
             }
+            if stdout_digest:
+                d["stdout_digest"] = stdout_digest
+                d["stdout_path"] = stdout_path
+            if stderr_digest:
+                d["stderr_digest"] = stderr_digest
+                d["stderr_path"] = stderr_path
+            return d
 
     except subprocess.TimeoutExpired:
         return {
-            "error": f"Grok call timed out after {timeout} seconds. The task may have continued in background mode.",
+            "error": f"CLI call timed out after {timeout} seconds. The task may have continued in background mode.",
             "exit_code": -1,
             "timed_out": True,
             "timeout_seconds": timeout,
@@ -1518,7 +1576,7 @@ def normalize_result(raw_result: dict, target_dir: str = None) -> dict:
     if not parsed.get("parsed", False):
         errors.append({
             "type": "missing_summary_marker",
-            "message": "Grok completed work but omitted the structured === DELEGATION SUMMARY === block."
+            "message": "The inner model completed work but omitted the structured === DELEGATION SUMMARY === block."
         })
     if raw_result.get("stderr"):
         errors.append({"type": "stderr", "message": raw_result["stderr"][:2000]})
@@ -1532,7 +1590,8 @@ def normalize_result(raw_result: dict, target_dir: str = None) -> dict:
             clean["status"] = "partial_success"
 
     # Keep original for debugging
-    clean["full_grok_response"] = text
+    clean["full_cli_response"] = text
+    clean["full_grok_response"] = text  # backward-compat alias
     if raw_result.get("exit_code") is not None:
         clean["exit_code"] = raw_result["exit_code"]
 
@@ -1592,7 +1651,7 @@ def render_human_report(result: dict) -> str:
         # Prominent warning when the run timed out / went into background
         if result.get("timed_out"):
             lines.append("## ⚠️ Task Timed Out / Background Run")
-            lines.append("The inner Grok run exceeded the configured timeout and may have continued in background mode.")
+            lines.append("The inner model run exceeded the configured timeout and may have continued in background mode.")
             lines.append("The artifacts below may be partial. Check the full JSON for any additional state or resumption info.")
             lines.append("")
 
@@ -1757,7 +1816,7 @@ def render_human_report(result: dict) -> str:
             lines.append("## No Code Changes")
             obs = result.get("observations")
             if obs:
-                lines.append("Grok performed read-only inspection / analysis. Key findings below.")
+                lines.append("The inner model performed read-only inspection / analysis. Key findings below.")
             else:
                 lines.append("No files were created, modified, or deleted.")
             lines.append("")
@@ -1904,18 +1963,25 @@ def _print_dry_run_preview(args, target_dir: str) -> None:
         print()
 
     if not quiet:
-        prompt = build_grok_prompt(
+        prompt = build_execution_prompt(
             task=args.task,
             target_dir=target_dir,
             context=args.context,
             constraints=args.constraints,
             long_running=getattr(args, "long_running", False),
         )
-        print("=== Full Prompt (exact text that would be sent to inner Grok) ===")
+        print("=== Full Prompt (exact text that would be sent to the execution CLI) ===")
         print(prompt)
         print()
 
     if not quiet:
+        research_dir = getattr(args, "research_dir", None) or str(Path(target_dir) / "research" / "tmp")
+        print("=== Build Attempt Trace Schema Preview ===")
+        print("Each run writes a YAML trace to:")
+        print(f"  {research_dir}/build-attempts/<trace-id>.yaml")
+        print("Trace sections: intent · intake · confirmation · manifest · runs · attack · verdict")
+        print("(manifest and confirmation are null-populated until Phase 2/4 are active)")
+        print()
         print("=== Expected Output Structure ===")
         if args.output_file:
             out = Path(args.output_file)
@@ -1925,11 +1991,13 @@ def _print_dry_run_preview(args, target_dir: str) -> None:
             print(f"Human report:     {parent / (stem + '.report.md')}")
             print(f"Run metadata:     {parent / (stem + '.run-meta.json')}")
             print(f"Patch file:       <same-stem>.patch   (created only if task produces code changes)")
+            print(f"Build trace:      {research_dir}/build-attempts/<id>.yaml")
             print()
             print(f"Status file:      {target_dir}/.cdh-run-<8-char-id>.status")
         else:
             print("- JSON result printed to stdout")
             print(f"- Status file (always): {target_dir}/.cdh-run-<8-char-id>.status")
+            print(f"- Build trace (always): {research_dir}/build-attempts/<id>.yaml")
             print("- (Add --output-file to also receive .report.md, .run-meta.json, and .patch when applicable)")
         print()
         print("To execute for real, re-run the identical command WITHOUT --dry-run.")
@@ -2047,6 +2115,90 @@ def acquire_target_lock(target_name: str, lock_base_dir: Optional[Path] = None):
             pass
 
 
+def _map_weakness_to_category(issue: str) -> str:
+    """Map a weakness_profile issue string to a trace critique category."""
+    issue = issue.lower()
+    if "missing_verification" in issue or "spec_coverage" in issue:
+        return "spec_coverage"
+    if "interface" in issue or "contract" in issue:
+        return "interface_contract"
+    if "error" in issue or "path" in issue:
+        return "error_path"
+    if "change_summary" in issue or "scope" in issue:
+        return "scope"
+    if "dependency" in issue or "implicit" in issue:
+        return "implicit_dependency"
+    return "scope"
+
+
+def _run_confirmation_loop(intake_result, *, quiet: bool = False) -> "ConfirmationBlock":
+    """
+    Phase 4: Confirmation Loop (--confirm, opt-in).
+
+    Shows the user a tight summary of normalized intent + manifest before CLI runs.
+    Accepts one correction input, re-normalizes, re-shows. Hard cap: 2 rounds.
+    Default (--confirm not passed): silent passthrough — this function is not called.
+    Captures corrections in the ConfirmationBlock for trace and tuning data.
+    """
+
+    block = ConfirmationBlock(shown_to_user=True, iterations=0, corrections=[])
+    current_result = intake_result
+
+    for round_num in range(1, 3):  # max 2 rounds (D-07)
+        block.iterations = round_num
+
+        # Show summary
+        print()
+        print("=== Confirmation: what the harness is about to build ===")
+        preview = (current_result.intent_normalized or "")[:400]
+        print(f"Intent: {preview}")
+        if current_result.manifest_expected:
+            print(f"Expected artifacts ({len(current_result.manifest_expected)}):")
+            for a in current_result.manifest_expected:
+                print(f"  [{a.type}] {a.name} — {a.description}")
+        else:
+            print("Expected artifacts: (none extracted)")
+        print()
+
+        try:
+            response = input("[cdh:confirm] Proceed? [enter=yes / type correction]: ").strip()
+        except (EOFError, OSError):
+            response = ""
+
+        if not response:
+            break  # user confirmed; run proceeds
+
+        # User provided a correction — re-normalize with the correction applied
+        print(f"[cdh:confirm] Applying correction (round {round_num}/2)...")
+        corrected_task = (current_result.intent_normalized or "") + f"\n\nCORRECTION: {response}"
+        try:
+            orch = get_orchestrator(provider="auto")
+            updated = run_intake_gate(
+                corrected_task,
+                orchestrator=orch,
+                model=current_result.normalized_via_model or "grok-build",
+                quiet=quiet,
+            )
+        except Exception:
+            updated = current_result  # keep going with prior version
+
+        correction_entry = {
+            "raw_correction": response,
+            "updated_normalized": updated.intent_normalized,
+        }
+        block.corrections.append(correction_entry)
+        current_result = updated
+
+        if round_num == 2:
+            print("[cdh:confirm] 2 rounds reached — proceeding regardless.")
+
+    # Update the intake result in-place so the caller gets the corrected version
+    intake_result.intent_normalized = current_result.intent_normalized
+    intake_result.manifest_expected = current_result.manifest_expected
+
+    return block
+
+
 def main():
     # Resolve version dynamically from package metadata (set by pyproject.toml).
     # Works for pip installs, editable installs, and direct dev execution via shims.
@@ -2054,18 +2206,16 @@ def main():
         import importlib.metadata
         _VERSION = importlib.metadata.version("code-delegation-harness")
     except Exception:
-        # Fallback only for development environments without proper packaging metadata.
-        # This should never be hit in installed wheels or editable installs.
-        _VERSION = "0.3.1-dev"
+        _VERSION = "0.4.0-dev"
 
-    parser = argparse.ArgumentParser(description="Delegate coding work to Grok")
+    parser = argparse.ArgumentParser(description="Delegate coding work to any coding CLI")
     parser.add_argument("task_positional", nargs="?", help="The coding task to perform (alternative to --task)")
     parser.add_argument("--task", help="The coding task to perform")
     parser.add_argument("--task-file", help="Path to a file containing the full coding task (strongly preferred for prompts > ~4KB or any prompt with newlines/quotes. The only robust way to launch the original 13KB+ architectural prompts through tmux/launchers without mangling.)")
     parser.add_argument("--target-dir", help="Working directory for the task")
     parser.add_argument("--context", help="Additional context for the task")
     parser.add_argument("--constraints", help="Hard constraints or requirements")
-    parser.add_argument("--model", default="grok-build", help="Model to use")
+    parser.add_argument("--model", default="grok-build", help="Execution CLI model to use (default: grok-build)")
     parser.add_argument("--output-file", help="Optional path to write structured results")
     parser.add_argument("--timeout", type=int, default=1800, help="Timeout in seconds for the inner model run (default: 1800 = 30 minutes)")
     parser.add_argument("--max-turns", type=int, default=60, help="Maximum turns for the inner model run (default: 60)")
@@ -2083,8 +2233,32 @@ def main():
     parser.add_argument("--long-running", "--keep-driving", dest="long_running", action="store_true", help="MOST IMPORTANT FLAG FOR SERIOUS WORK. Enable long-job mode for ambitious multi-hour implementation tasks. Bumps timeouts/turns/waits, injects job-to-end + anti-stale-data language, and enables dynamic fresh checkpoint injection on every probe.")
     parser.add_argument("--auto-remediate", action="store_true", help="Enable automatic pass-2 remediation when pass-1 underperforms.")
     parser.add_argument("--remediate-on", default="partial,fail,missing_summary", help="Comma-separated remediation triggers: partial,fail,missing_summary.")
-    parser.add_argument("--remediation-max-passes", type=int, default=1, help="Maximum remediation passes (default: 1).")
+    # --iterations is the PRD v1.0 name; --remediation-max-passes is the original. Both accepted.
+    parser.add_argument("--iterations", type=int, default=None, dest="iterations",
+                        help="Total pass cap including original run (default: 2). Replaces/aliases --remediation-max-passes.")
+    parser.add_argument("--remediation-max-passes", type=int, default=1, help="Maximum remediation passes (default: 1). Use --iterations for the PRD-aligned flag.")
     parser.add_argument("--remediation-mode", default="targeted-inversion", choices=["targeted-inversion"], help="Remediation strategy (default: targeted-inversion).")
+    # Intake gate flags (Phase 2)
+    parser.add_argument("--orchestrator-model", default=None,
+                        help="Model for intake normalization/attack frame generation. Defaults to --model.")
+    parser.add_argument("--orchestrator-provider", default="auto",
+                        choices=["auto", "anthropic", "cli"],
+                        help="Orchestrator backend: auto (detect from env), anthropic (SDK), cli (reuse execution CLI). Default: auto.")
+    parser.add_argument("--orchestrator-timeout", type=int, default=30,
+                        help="Timeout in seconds for the intake orchestrator call (default: 30).")
+    parser.add_argument("--skip-normalization", action="store_true",
+                        help="Bypass intake detection + normalization. Pass raw prompt directly to execution CLI.")
+    # Hygiene stanza flags (Phase 3)
+    parser.add_argument("--no-hygiene", action="store_true",
+                        help="Skip hygiene stanza injection. For debugging only.")
+    parser.add_argument("--stanza-modules", default="base",
+                        help="Comma-separated hygiene stanza modules to apply (default: base).")
+    # Confirmation loop flag (Phase 4)
+    parser.add_argument("--confirm", action="store_true",
+                        help="Show normalized prompt + manifest before running. Max 2 correction rounds. Off by default.")
+    # Research directory flag
+    parser.add_argument("--research-dir", default=None,
+                        help="Directory for full stdout/stderr artifacts and build attempt traces. Default: {target-dir}/research/tmp.")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output. Only show errors and final artifact locations.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show more detailed internal progress messages.")
     parser.add_argument("--version", action="version", version=f"code-delegation-harness {_VERSION}")
@@ -2618,9 +2792,110 @@ def main():
         _print_dry_run_preview(args, target_dir)
         sys.exit(0)
 
-    # Build the full prompt early so we can store it for high-fidelity recovery/resume
-    prompt = build_grok_prompt(
-        task=args.task,
+    # -------------------------------------------------------------------------
+    # Resolve research dir (D-07: stdout/stderr → research/tmp, digests in trace)
+    # -------------------------------------------------------------------------
+    research_dir = getattr(args, "research_dir", None) or str(Path(target_dir) / "research" / "tmp")
+    try:
+        ensure_research_dir(research_dir)
+    except (OSError, RuntimeError, ValueError, TypeError) as rderr:
+        if verbosity >= 1:
+            print(f"[cdh] Warning: could not create research dir {research_dir}: {rderr}")
+
+    # -------------------------------------------------------------------------
+    # Resolve --iterations / --remediation-max-passes (D-06: default 2 passes)
+    # --iterations N = total passes including original. 1 original + (N-1) attack passes.
+    # For backward compat: if --iterations not given, honour --remediation-max-passes.
+    # -------------------------------------------------------------------------
+    if getattr(args, "iterations", None) is not None:
+        # --iterations 2 means 1 original + 1 attack pass = remediation_max_passes=1
+        eff_max_passes = max(0, args.iterations - 1)
+        args.remediation_max_passes = eff_max_passes
+    # If neither was explicitly set, default to 2 total passes (1 remediation).
+    # Only applies when --auto-remediate is also given.
+
+    # -------------------------------------------------------------------------
+    # Stanza modules resolution (Phase 3)
+    # -------------------------------------------------------------------------
+    stanza_modules = [m.strip() for m in getattr(args, "stanza_modules", "base").split(",") if m.strip()]
+
+    # -------------------------------------------------------------------------
+    # Phase 2: Intake Gate (D-01: runs before every CLI invocation)
+    # -------------------------------------------------------------------------
+    intake_result = None
+    if not getattr(args, "skip_normalization", False):
+        try:
+            orch_model = getattr(args, "orchestrator_model", None) or args.model
+            orch_provider = getattr(args, "orchestrator_provider", "auto") or "auto"
+            orch_timeout = getattr(args, "orchestrator_timeout", 30) or 30
+            orchestrator = get_orchestrator(
+                provider=orch_provider,
+                cli_name="grok",   # execution CLI name for CLI backend
+            )
+            intake_result = run_intake_gate(
+                args.task,
+                orchestrator=orchestrator,
+                model=orch_model,
+                timeout=orch_timeout,
+                quiet=getattr(args, "quiet", False),
+            )
+        except Exception as intake_exc:
+            if verbosity >= 1:
+                print(f"[cdh] Warning: intake gate unavailable ({intake_exc}). Passing raw prompt through.")
+            intake_result = None
+
+    # D-03: intent_raw is immutable — always the original task.
+    intent_raw = args.task
+
+    # D-04: execution CLI always receives intent_normalized + hygiene stanza.
+    if intake_result is not None:
+        normalized_task = intake_result.intent_normalized or args.task
+    else:
+        normalized_task = args.task
+
+    # -------------------------------------------------------------------------
+    # Phase 4: Confirmation Loop (--confirm, opt-in, D-08)
+    # -------------------------------------------------------------------------
+    confirmation_block = ConfirmationBlock()
+    if getattr(args, "confirm", False) and intake_result is not None:
+        confirmation_block = _run_confirmation_loop(
+            intake_result=intake_result,
+            quiet=getattr(args, "quiet", False),
+        )
+        # Use the (possibly corrected) normalized intent after confirmation
+        if confirmation_block.corrections:
+            last_correction = confirmation_block.corrections[-1]
+            if isinstance(last_correction, dict):
+                normalized_task = last_correction.get("updated_normalized", normalized_task)
+            elif hasattr(last_correction, "updated_normalized"):
+                normalized_task = last_correction.updated_normalized or normalized_task
+
+    # -------------------------------------------------------------------------
+    # Phase 3: Hygiene Stanza injection (D-04/D-05)
+    # -------------------------------------------------------------------------
+    hygiene_suffix = ""
+    if not getattr(args, "no_hygiene", False):
+        try:
+            stanza_text = load_stanza(stanza_modules)
+            if stanza_text:
+                hygiene_suffix = f"\n\n--- ENGINEERING STANDARDS ---\n{stanza_text}"
+        except (OSError, RuntimeError, ValueError, TypeError) as se:
+            if verbosity >= 1:
+                print(f"[cdh] Warning: could not load hygiene stanza: {se}")
+
+    # Inject manifest expectation into the task if we have one (reduces drift)
+    manifest_injection = ""
+    if intake_result and intake_result.manifest_expected:
+        lines = ["", "EXPECTED ARTIFACTS (produce all of these):"]
+        for a in intake_result.manifest_expected:
+            lines.append(f"  - [{a.type}] {a.name}: {a.description}")
+        manifest_injection = "\n".join(lines)
+
+    effective_task = normalized_task + manifest_injection + hygiene_suffix
+
+    # Build the full execution prompt
+    prompt = build_execution_prompt(
+        task=effective_task,
         target_dir=target_dir,
         context=args.context,
         constraints=args.constraints,
@@ -2718,7 +2993,16 @@ def main():
     # In quiet mode we intentionally print almost nothing here — only errors and final artifacts
 
     try:
-        result = call_model_headless(prompt, cwd=target_dir, model=args.model, timeout=args.timeout, max_turns=args.max_turns)
+        result = call_model_headless(
+            prompt,
+            cwd=target_dir,
+            model=args.model,
+            timeout=args.timeout,
+            max_turns=args.max_turns,
+            research_dir=research_dir,
+            run_id=launch_run_id,
+            pass_label="pass1",
+        )
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as e:
         status_manager.mark_crashed(f"Exception during model call: {str(e)[:300]}")
         raise
@@ -2849,6 +3133,9 @@ def main():
                 model=args.model,
                 timeout=args.timeout,
                 max_turns=args.max_turns,
+                research_dir=research_dir,
+                run_id=launch_run_id,
+                pass_label="pass2",
             )
             if ok:
                 pass2_raw = remediation_outcome
@@ -2892,6 +3179,126 @@ def main():
             }
             clean_result.setdefault("metadata", {})
             clean_result["metadata"]["remediation_applied"] = False
+
+    # -------------------------------------------------------------------------
+    # Emit Build Attempt Trace (D-07: every invocation produces a trace)
+    # -------------------------------------------------------------------------
+    trace_path: Optional[str] = None
+    try:
+        # Build run records for pass 1
+        pass1_exit = "clean" if clean_result.get("exit_code", 0) in (0, None) else "fail"
+        if result.get("timed_out"):
+            pass1_exit = "timeout"
+        run_records = [
+            RunRecord(
+                run_id=1,
+                prompt_chars=len(prompt),
+                cli=args.model,
+                cli_args=["--always-approve"],
+                exit=pass1_exit,
+                stdout_digest=result.get("stdout_digest"),
+                stderr_digest=result.get("stderr_digest"),
+                stdout_path=result.get("stdout_path"),
+                stderr_path=result.get("stderr_path"),
+                attack_triggered=bool(clean_result.get("remediation_applied")),
+            )
+        ]
+        # Add pass 2 record if remediation ran
+        if clean_result.get("remediation_applied"):
+            pass2_exit = "clean" if clean_result.get("exit_code", 0) in (0, None) else "fail"
+            run_records.append(RunRecord(
+                run_id=2,
+                prompt_chars=len(clean_result.get("metadata", {}).get("remediation_prompt_file") or ""),
+                cli=args.model,
+                cli_args=["--always-approve", "--yolo"],
+                exit=pass2_exit,
+                attack_triggered=False,
+            ))
+
+        # Build attack block from weakness_profile if available
+        weakness_profile = clean_result.get("weakness_profile") or []
+        critique_items = [
+            CritiqueItem(
+                assumption=w.get("evidence", ""),
+                category=_map_weakness_to_category(w.get("issue", "")),
+                severity="medium",
+            )
+            for w in weakness_profile
+        ]
+        attack_block = AttackBlock(
+            generator="failure" if pass1_exit in ("fail", "timeout") else "success",
+            critique=critique_items,
+            manifest_gaps_injected=[
+                a.name for a in (intake_result.manifest_expected if intake_result else [])
+                if a.name not in (clean_result.get("changes", {}).get("created", []) or [])
+                   + (clean_result.get("changes", {}).get("modified", []) or [])
+            ] if intake_result else [],
+            attack_frame_from_intake=intake_result.attack_frame_generated if intake_result else None,
+        )
+
+        # Manifest block
+        manifest_block = ManifestBlock(
+            expected=[
+                type("_A", (), {"type": a.type, "name": a.name, "description": a.description})()
+                for a in (intake_result.manifest_expected if intake_result else [])
+            ],
+            found=(clean_result.get("changes", {}).get("created", []) or [])
+                  + (clean_result.get("changes", {}).get("modified", []) or []),
+        ) if intake_result else ManifestBlock()
+        # Import proper type
+        from .trace import ArtifactExpectation as _TraceArtifact, ManifestBlock as _ManifestBlock
+        trace_manifest = _ManifestBlock(
+            expected=[
+                _TraceArtifact(type=a.type, name=a.name, description=a.description)
+                for a in (intake_result.manifest_expected if intake_result else [])
+            ],
+            found=(clean_result.get("changes", {}).get("created", []) or [])
+                  + (clean_result.get("changes", {}).get("modified", []) or []),
+            missing=[
+                a.name for a in (intake_result.manifest_expected if intake_result else [])
+                if a.name not in (
+                    (clean_result.get("changes", {}).get("created", []) or [])
+                    + (clean_result.get("changes", {}).get("modified", []) or [])
+                )
+            ],
+        )
+
+        verdict = VerdictBlock(
+            outcome="passed" if clean_result.get("success") and not clean_result.get("errors") else "failed",
+            smoke_tier=None,
+        )
+
+        normalized_via = NormalizedVia(
+            model=intake_result.normalized_via_model if intake_result else None,
+            prompt_version=intake_result.normalized_via_prompt_version if intake_result else None,
+        )
+
+        trace = build_trace_from_result(
+            intent_raw=intent_raw,
+            intent_normalized=effective_task,
+            was_normalized=bool(intake_result and intake_result.was_normalized),
+            intent_detection=intake_result.intent_detection if intake_result else None,
+            normalized_via=normalized_via,
+            run_records=run_records,
+            attack_block=attack_block,
+            verdict=verdict,
+            manifest=trace_manifest,
+            confirmation=confirmation_block if getattr(args, "confirm", False) else ConfirmationBlock(),
+            hygiene_stanza_version=STANZA_VERSION if not getattr(args, "no_hygiene", False) else None,
+            stanza_modules=stanza_modules if not getattr(args, "no_hygiene", False) else [],
+            attack_frame_generated=intake_result.attack_frame_generated if intake_result else None,
+            run_id=launch_run_id,
+            harness_version=_VERSION if '_VERSION' in dir() else None,
+            status="complete" if clean_result.get("success") else "failed",
+        )
+        trace_path = write_trace(trace, research_dir)
+        clean_result["build_attempt_trace"] = trace_path
+        if verbosity >= 1:
+            print(f"[cdh] Build attempt trace written to {trace_path}")
+    except Exception as trace_err:
+        # Trace emission must never abort the run
+        if verbosity >= 1:
+            print(f"[cdh] Warning: could not write build attempt trace: {trace_err}")
 
     output = json.dumps(clean_result, indent=2)
 

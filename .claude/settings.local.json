@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /Users/jcf/Projects/code-harness-claude/ && ls -la /Users/jcf/Projects/ | head -30)",
+      "Bash(find /Users/jcf -name \"*.py\" -path \"*/code-delegation*\" 2>/dev/null | head -20 && find /Users/jcf -name \"gcdh\" 2>/dev/null | head -5)",
+      "Bash(pip show *)",
+      "Bash(pip3 show *)",
+      "Bash(python3 -c \"import importlib; import code_delegation_harness; print\\(code_delegation_harness.__file__\\)\")",
+      "Bash(python3 -c \"import code_delegation_harness; print\\(code_delegation_harness.__file__\\)\")",
+      "Bash(python3.9 -c \"import code_delegation_harness; print\\(code_delegation_harness.__file__\\)\")",
+      "Bash(/Users/jcf/Library/Python/3.9/bin/python3.9 -c \"import code_delegation_harness; print\\(code_delegation_harness.__file__\\)\")",
+      "Bash(/Library/Developer/CommandLineTools/usr/bin/python3 -c \"import sys; print\\(sys.path\\)\")",
+      "Read(//Library/Developer/CommandLineTools/usr/lib/python3.9/site-packages/**)",
+      "Bash(gh repo *)",
+      "Bash(find /tmp/cdh-review -type f | sort)",
+      "Bash(gh api *)",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(python3 -m pytest tests/ -q --tb=no)",
+      "Bash(python3 -m pytest tests/ -q --tb=short)",
+      "Bash(python3 -m src.code_delegation_harness --task \"test task\" --target-dir /tmp --dry-run)",
+      "Bash(python3 -m src.code_delegation_harness --help)",
+      "Bash(git -C /Users/jcf/Projects/code-harness-claude add -A)",
+      "Bash(git -C /Users/jcf/Projects/code-harness-claude status --short)"
+    ]
+  }
+}
