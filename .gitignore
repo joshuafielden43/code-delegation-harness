@@ -89,3 +89,8 @@ state/
 outputs/
 patches/
 *.log
+# Harness runtime artifacts — may contain full task text, API responses, stdout/stderr.
+# Never commit these; they are ephemeral and potentially sensitive.
+research/
+.cdh-prompts/
+.cdh-locks/

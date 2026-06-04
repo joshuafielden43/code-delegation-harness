@@ -1,0 +1,7 @@
+ENGINEERING STANDARDS (apply universally to all output from this task):
+
+- Produce auditable artifacts: leave the codebase in a state where every change is reviewable and attributable.
+- Define and respect interface contracts: do not silently change the signature, return type, or behaviour of any public function, method, or API endpoint.
+- Iterate rather than rewrite: prefer minimal, targeted changes to the existing code over broad rewrites. If a rewrite is necessary, justify it explicitly.
+- Leave a decision note: for any non-obvious design choice, trade-off, or workaround, add a brief inline rationale comment so the next reader understands why, not just what.
+- Declared dependencies only: do not add libraries, packages, or imports that are not already present in the project or explicitly requested in the spec. Undeclared additions are a breakage.

@@ -29,14 +29,24 @@ gcdh --task "..." --target-dir /path/to/project [options]
 | `--resume`                  | Resume waiting for a previous background run                                |
 | `--run-name`                | Human-friendly name for this run (used in status files)                     |
 | `--prune` [N]               | Prune old completed status files (default: 7 days)                          |
+| `--prune-research` [N]      | Prune research/tmp artifacts (traces, stdout/stderr) older than N days (default: 7). Use with `--research-dir` for non-default locations. |
 | `--reap-dead`               | Scan for silent runs (no heartbeat >5m) and mark them `crashed`. Use after reboots or wrapper deaths. |
 | `--detach`                  | Launch in daemon mode (nohup+setsid). Survives terminal close. Unix-only. Logs to /dev/null — always pair with `--output-file`. |
 | `--long-running`, `--keep-driving` | Long-job mode with stronger timeouts/turns/wait defaults and hardened continuation behavior |
 | `--auto-remediate`          | Enable automatic pass-2 remediation when pass-1 underperforms                |
 | `--remediate-on`            | Comma-separated remediation triggers (`partial,fail,missing_summary`)         |
-| `--remediation-max-passes`  | Maximum remediation passes (default: `1`)                                     |
+| `--iterations` N            | Total pass cap including original run (default: 2). Replaces/aliases `--remediation-max-passes`. |
+| `--remediation-max-passes`  | Maximum remediation passes (default: `1`). Use `--iterations` for the PRD-aligned flag. |
 | `--remediation-mode`        | Remediation strategy (currently: `targeted-inversion`)                        |
-| `--model`                   | Model to use (default depends on environment)                               |
+| `--model`                   | Execution CLI model to use (default: `grok-build`)                           |
+| `--orchestrator-model`      | Model for intake normalization and attack frame generation (default: inherits `--model`) |
+| `--orchestrator-provider`   | Orchestrator backend: `auto` (detect from env), `anthropic` (SDK), `cli` (reuse execution CLI). Default: `auto`. |
+| `--orchestrator-timeout`    | Timeout in seconds for the intake orchestrator call (default: 30). Up to 3 retries on transient failure. |
+| `--skip-normalization`      | Bypass intake detection, normalization, and stanza injection entirely. Pass raw prompt to CLI. |
+| `--no-hygiene`              | Skip hygiene stanza injection only. Intake still runs. For debugging. |
+| `--stanza-modules`          | Comma-separated hygiene stanza modules (default: `base`). |
+| `--confirm`                 | Show normalized prompt + manifest before running. Max 2 correction rounds. Off by default. |
+| `--research-dir`            | Directory for full stdout/stderr artifacts and build attempt traces. Default: `{target-dir}/research/tmp`. |
 | `--timeout`                 | Timeout for a single inner run in seconds (default: 1800)                   |
 | `--max-turns`               | Maximum turns for the inner run (default: 60)                               |
 | `--context`                 | Additional context for the task                                             |

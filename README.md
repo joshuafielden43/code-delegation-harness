@@ -1,231 +1,209 @@
 # code-delegation-harness
 
-A simple harness for delegating coding work to LLMs while keeping your main agent clean.
+A model-agnostic harness for delegating coding work to any coding CLI (Claude Code, Grok Code, Codex, Agy) while keeping your primary agent or orchestration layer clean.
 
-It gives you structured output + reviewable artifacts (JSON + human report + patch) even on long-running tasks, and lets you swap different backends without rewriting your top-level orchestration.
+Produces structured, reviewable artifacts plus a canonical build attempt trace per run. Normalises prompts upfront, verifies output against a typed artifact manifest, and runs adversarial remediation passes grounded in real filesystem evidence — not model self-reporting.
 
 ## Quick Start
 
-For normal use:
-
 ```bash
-pip install git+https://github.com/joshuafielden43/code-delegation-harness.git@v0.2.1
+pip install git+https://github.com/joshuafielden43/code-delegation-harness.git
 gcdh --help
 ```
 
-For development or the absolute latest code, see the [full installation guide](docs/installation.md).
+For the Anthropic-backed intake normaliser:
 
-Works best with Grok right now, but designed to be usable with other models too.
+```bash
+pip install "git+https://github.com/joshuafielden43/code-delegation-harness.git#egg=code-delegation-harness[intake]"
+export ANTHROPIC_API_KEY=...
+```
 
-## Why This Exists
+## What It Does
 
-Most agent setups mix your long-term context, style, and memory with the actual coding work. Over time that gets messy.
+Every `gcdh` invocation goes through four stages:
 
-This tool tries to keep those concerns separate:
-- Your primary agent/persona stays yours.
-- Coding tasks get handed off to a focused execution environment.
-- You get back clean, reviewable results instead of another giant conversation.
+1. **Intake gate** — detects whether the prompt is human or AI-structured; if human, normalises it via an orchestrator model (Anthropic API or CLI fallback); extracts a typed artifact manifest; pre-generates an adversarial attack frame. One API call, done once upfront.
 
-It also gives you the option to swap the backend harness later without having to change how you orchestrate things at the top level.
+2. **Hygiene stanza** — appends a fixed, version-pinned block of universal engineering standards to every normalised prompt before the execution CLI runs.
 
-## Current Output
+3. **Execution + manifest diff** — runs the coding CLI; then does a real filesystem scan against the expected artifact list. Missing artifacts become explicit attack targets.
 
-When you run a task with `--output-file`, you get:
-- `result.json` — structured data
-- `result.report.md` — human-readable review document with diffs and observations
-- `result.patch` — ready-to-apply unified diff (when code changed)
+4. **Attack loop + smoke tests** — if pass 1 underperforms (`--auto-remediate`), runs a bounded adversarial second pass targeting actual gaps. T1/T2/T3 smoke tests verify existence, importability, and interface conformance.
 
-The goal is simple: you stay you. The work gets done well. And you only have to review the actual result.
+Every run produces a **build attempt trace** — a YAML record of the full lifecycle: intent, normalisation, manifest, run records with SHA-256 output digests, attack critique, verdict, and smoke tier.
 
-## Current Output (What You Actually Review)
+## Output Artifacts
 
-When you delegate with `--output-file`, the harness produces:
+With `--output-file`:
 
-- `result.json` — full structured data (status, files changed, summaries, errors)
-- `result.report.md` — the primary document for reviewing the **end result** (clear status, per-file change descriptions with line stats and diff previews, observations from any analysis, verification steps)
-- `result.patch` (when code was modified) — a ready-to-apply unified diff you can review or apply directly with `git apply`
-
-The design goal is that you spend your time reviewing actual delivered work and collaborating on changes, not reviewing incremental proposals.
+| Artifact | Contents |
+|---|---|
+| `result.json` | Full structured result + `intake_status`, `manifest_found/missing`, `smoke`, `build_attempt_trace` |
+| `result.report.md` | Human-scannable review doc: status, per-file diffs, build trace path, intake status |
+| `result.patch` | Ready-to-apply unified diff (when code was modified) |
+| `result.run-meta.json` | Reproducibility metadata (flags, timing, run ID) |
+| `{research-dir}/build-attempts/{id}.yaml` | Canonical build attempt trace |
+| `{research-dir}/{run-id}-pass1-stdout.txt` | Full CLI stdout (SHA-256 in trace) |
 
 ## Basic Usage
 
-From within a Grok / agent session:
+```bash
+# Simple delegation
+gcdh --task "Add type hints to src/auth.py" \
+     --target-dir /path/to/project \
+     --output-file result.json
 
+# With intake normalisation (Anthropic backend auto-detected from ANTHROPIC_API_KEY)
+gcdh --task "Add OAuth2 login" \
+     --target-dir /path/to/project \
+     --output-file result.json \
+     --auto-remediate --iterations 2
+
+# Preview without executing
+gcdh --task "..." --target-dir /path --dry-run
+
+# Long-running ambitious work (auto-escapes from TUI/CI wrappers via tmux)
+gcdh --long-running --wait-for-completion --max-wait 86400 \
+     --task "..." --target-dir /path --output-file result.json \
+     --auto-remediate --iterations 2 --run-name "my-ambitious-job"
 ```
-Delegate this task using the code-delegation-harness:
 
-Task: Add Google-style docstrings and type hints to the `process_batch` function in src/batch.py. Do not change behavior.
+## Intake Gate
 
-Target directory: /path/to/your/project
+The intake gate runs before every CLI invocation (bypassed by `--skip-normalization`).
 
-Constraints: Follow the existing style in the file. Keep changes minimal.
-```
+- **Detection**: ~5-line schema validator distinguishes human vs AI-structured prompts. AI-structured passes through unchanged.
+- **Normalisation**: rewrites human prompts into explicit, structured form via the orchestrator model.
+- **Manifest extraction**: produces a typed artifact list (`file`, `function`, `class`, `interface`, `config`, `library`). Injected into the execution prompt to reduce drift.
+- **Attack frame pre-gen**: adversarial critique template generated upfront, seeding the attack loop.
 
-For the best experience, have the underlying wrapper called with `--output-file` so you receive the full set of review artifacts.
+On any failure the harness degrades gracefully — raw prompt passes through, `intake_status: degraded` in the result. Never aborts a run.
 
-### Professional CLI (`gcdh`)
+### Orchestrator backends
 
-**Recommended today (immediate & reliable):**
+| Provider | How | Requires |
+|---|---|---|
+| `auto` (default) | Anthropic API if `ANTHROPIC_API_KEY` set, else CLI | — |
+| `anthropic` | Anthropic API, native `tool_use` | `pip install cdh[intake]` |
+| `cli` | Execution CLI subprocess | nothing |
 
 ```bash
-cd code-delegation-harness
-chmod +x bin/gcdh
-export PATH="$PWD/bin:$PATH"
-
-gcdh --help
-gcdh --quiet --long-running --task "..." --target-dir /path/to/project --output-file result.json
-
-# For any real ambitious or long-running dogfood / implementation work (the primary use case),
-# use the full modern pattern. From constrained environments (this TUI, short CI wrappers, etc.)
-# the harness will auto-escape into tmux and auto-reap prior dead runs so the job survives
-# and the live target is never left in a partial broken state.
-
-# Easiest one-command launcher (recommended):
-#   ./scripts/gcdh-tmux --long-running --wait-for-completion --max-wait 86400 \
-#       --output-file /tmp/run.json --run-name "my-work" \
-#       --task "..." --target-dir /tmp/work
-
-# Or direct (auto-escape triggers automatically for --long-running in hostile launchers):
-gcdh --long-running --wait-for-completion --max-wait 86400 \
-     --output-file /tmp/run.json --run-name "my-work" --quiet \
-     --task "..." --target-dir /tmp/work
-
-# The harness now bakes in:
-# - Ruthless "job to the end + mandatory fresh verification (no stale data)" language
-# - Dynamic PROGRESS.json injection on every background probe
-# - Auto tmux escape from short-timeout outer wrappers (TUI 300s SIG15 etc.)
-# - Auto-reap of dead prior runs on every long launch (prevents leaving broken live state)
-# - Strict safe isolated workspace rule (never mutate live target until final promotion)
+gcdh --orchestrator-provider anthropic --orchestrator-model claude-opus-4-8 ...
+gcdh --orchestrator-provider cli ...        # offline/air-gapped
+gcdh --skip-normalization ...               # bypass intake + stanza entirely
 ```
 
-**Installation**
+### Normalization prompt versioning
 
-See the [full Installation guide](docs/installation.md) for the recommended path for primary agents versus development use.
+The system prompt used for normalisation lives in `src/code_delegation_harness/prompts/normalization_v1.0.txt`. Edit it to improve quality without changing Python source. The version is recorded in every trace under `normalized_via.prompt_version`.
+
+## Hygiene Stanza
+
+A fixed block of five universal engineering standards appended to every normalised prompt:
+
+- Produce auditable artifacts
+- Respect interface contracts
+- Iterate rather than rewrite
+- Leave a decision note for non-obvious choices
+- Declared dependencies only
+
+Version-pinned (`v1.0`). Portability-linted — any stanza referencing a specific project, file, or script fails `assert_stanza_portable()`. Domain-specific module slots reserved for Phase 6.
+
+```bash
+gcdh --no-hygiene              # skip stanza (debugging only)
+gcdh --stanza-modules base     # explicit module selection (default)
+```
+
+## Manifest Diffing + Smoke Tests
+
+After execution, the harness scans the target directory against the expected artifact manifest:
+
+- `manifest_found` / `manifest_missing` in result JSON — ground truth, not model self-reporting
+- Missing artifacts are injected as `spec_coverage` weakness items in the attack prompt
+- **T1** — artifact exists on disk
+- **T2** — `python -c 'import <module>'` exits 0
+- **T3** — public names from spec description present in AST
+
+Smoke tier (`null | t1_exists | t2_compiles | t3_interface`) in `verdict.smoke_tier` and the trace.
+
+## Attack Loop
+
+```bash
+gcdh --auto-remediate --iterations 2 ...
+```
+
+`--iterations N` = total pass cap (1 original + N-1 attack passes). Default 2. The attack prompt is built from:
+- LLM-inferred weakness profile from pass 1
+- Real manifest gaps (filesystem scan)
+- Pre-generated attack frame from intake
+
+Pass 2 uses `--yolo` (unattended). The attack prompt is persisted as `<stem>.pass2.prompt.txt` for review.
+
+## Confirmation Loop
+
+```bash
+gcdh --confirm ...
+```
+
+Before the CLI runs, shows normalised intent and expected artifact list. Accepts one correction, re-normalises, re-shows. Hard cap: 2 rounds, proceeds regardless. Corrections captured in trace for tuning.
+
+Off by default — never interrupts automated pipelines.
+
+## Build Attempt Trace
+
+Every run writes a YAML trace to `{research-dir}/build-attempts/{id}.yaml`:
+
+```yaml
+id: 20260604T011812-0e7118be
+status: complete
+intent_raw: "add login feature"
+intent_detection: human
+was_normalized: true
+intent_normalized: "TASK: Add OAuth2 login to src/auth.py ..."
+hygiene_stanza_version: v1.0
+manifest:
+  expected: [{type: file, name: auth.py, ...}]
+  found: [auth.py]
+  missing: []
+runs:
+  - run_id: 1
+    cli: grok-build
+    exit: clean
+    stdout_digest: deadbeef...
+verdict:
+  outcome: passed
+  smoke_tier: t2_compiles
+```
+
+Traces are 0600. Purge with `--prune-research [N]` (default 7 days).
+
+## Operational Commands
+
+```bash
+gcdh --status --target-dir /path         # active + completed runs
+gcdh --resume <run-id>                   # re-attach to background run
+gcdh --reap-dead --target-dir /path      # mark silent runs crashed
+gcdh --prune 7 --target-dir /path        # prune old status files
+gcdh --prune-research 7 --target-dir /path   # prune traces + stdout/stderr
+```
 
 ## Documentation
 
-Full documentation lives in the `docs/` directory:
-
-- [Installation](docs/installation.md)
-- [Quickstart](docs/quickstart.md)
-- [Usage Notes](docs/usage-notes.md)
-- [For Agents and Sidecars](docs/usage/for-agents-and-sidecars.md)
-- [Output Artifacts](docs/usage/output-artifacts.md)
 - [CLI Reference](docs/usage/cli-reference.md)
-- [Examples](docs/examples/)
-- [Dogfooding Case Study](docs/dogfooding-case-study.md)
+- [Output Artifacts](docs/usage/output-artifacts.md)
+- [Architecture](docs/advanced/architecture.md)
+- [For Agents and Sidecars](docs/usage/for-agents-and-sidecars.md)
+- [Operational Runbook](docs/operations/runbook-resilience.md)
 
-For people working on the harness itself, see the `development/` section, including the [Release Process](docs/development/release-process.md) which documents how we actually shipped the first public versions (including the real-world gotchas).
-
-The [Complete Proposed Documentation Structure](docs/DOCUMENTATION-STRUCTURE.md) shows the full set of docs we plan to build over time.
-
-### For Agents, Sidecars & Automation (Robot-Useful)
-
-The harness was built to be driven by other agents and sidecars:
-
-- `--quiet` (`-q`) → minimal, clean output perfect for programmatic consumption.
-- `--output-file` is strongly recommended — it produces the full machine + human artifact set.
-- Structured JSON output is stable and self-describing.
-- `--dry-run` + `--quiet` gives agents a cheap, safe way to preview a task before committing.
-- Persistent status files + `--status` / `--resume` make long-running work observable and resumable from outside.
-
-This design makes it a strong primitive for building reliable delegation into larger agent architectures (including future sidecar systems).
-
-### Quiet Mode
-
-`--quiet` (`-q`) is one of the most useful flags for both humans and agents. In quiet mode the tool only emits errors and the final artifact paths, making runs much cleaner — especially when combined with `--output-file`.
-
-Long-running tasks are well supported:
-- Use `--timeout` (seconds) and `--max-turns` to give big jobs room to breathe.
-- For *ambitious long-running implementation* (the primary use case: e.g. extending skills like proxmox-control with real guest-exec/resize/discovery features + tests + promotion, all via harness only): add `--long-running --wait-for-completion --max-wait 86400 --run-name "my-ambitious-job"`. This enables bumped limits, dynamic PROGRESS.json injection on every background probe, and the ultra-ruthless baked-in "job to the end + mandatory fresh live verification (no stale VM refs) + no early summary" protocol.
-- Add `--wait-for-completion --max-wait 14400` (for example) and the wrapper will automatically poll until a background run finishes, then deliver the complete artifacts (full .json + .report.md + .patch + .run-meta.json).
-- Persistent `.cdh-run-<id>.status` files (with `last_heartbeat_at`, pid, full prompt) are written for any run using `--run-name` or `--wait-for-completion`. These contain task snippet, run_name, timing, and state (launched / waiting / completed / max_wait_exceeded / crashed). See `--status`, `--reap-dead`, `--resume`, the operational runbook in `docs/operations/`, and `scripts/monitor_cdh_status.py` for production monitoring and recovery.
-- Use `--status --target-dir /path` at any time to see both active and completed runs in that tree.
-- Use `--resume <run-id-or-file>` to re-attach to a background run (smart short-circuit if it already finished).
-- All final human review artifacts reflect the full background/resumption story when relevant.
-
-See the `docs/` directory for usage notes, examples, and case studies.
-
-### Dry-Run Preview Mode
-
-Use `--dry-run` (ideally with `--quiet`) before expensive or long-running delegations. It shows exactly what would happen without executing anything or writing files:
-
-- The full prompt that would be sent
-- Resolved configuration and flags
-- Expected output artifacts
-
-This is extremely useful for agents and for humans reviewing scope.
-
-Combine with `--quiet` for the cleanest preview output.
-
-### Automatic Pass-2 Remediation (Counter-Prompt Mode)
-
-For underperforming first passes, you can enable a second targeted remediation pass:
+## Development
 
 ```bash
-gcdh \
-  --task "..." \
-  --target-dir /path/to/work \
-  --output-file /tmp/run.json \
-  --auto-remediate \
-  --remediate-on partial,fail,missing_summary \
-  --remediation-max-passes 1 \
-  --remediation-mode targeted-inversion
+git clone https://github.com/joshuafielden43/code-delegation-harness
+pip install -e ".[intake]"
+python -m pytest tests/
 ```
 
-What it does:
-- Runs pass 1 normally.
-- If triggered (`partial_success`, `failure`, or missing summary marker), runs pass 2 automatically.
-- Builds a weakness profile from pass-1 output, then applies a bounded-aggressive targeted inversion overlay ("attack this issue") against weak spots only.
-- Preserves pass-1 baseline context and avoids redoing validated work.
-- Emits reconciliation metadata in final JSON:
-  - `pass_number`
-  - `parent_run_id`
-  - `remediation_reason`
-  - `weakness_profile`
-  - `remediation_applied`
-  - `remediation_delta`
-
-When `--output-file` is used, the pass-2 prompt is also persisted as:
-- `<output-stem>.pass2.prompt.txt`
-
-## Strengths
-
-- Produces excellent, self-contained review artifacts by default
-- Strong, reliable support for long-running and background tasks
-- Clean handling of read-only / no-change work
-- Clear error categorization and status reporting
-- Full observability via persistent status files + `--status` / `--resume`
-
-## Current Status (Production Ready)
-
-The harness is ready for real, repeated use on production work.
-
-It delivers clean, reviewable end results even on long-running tasks:
-- Complete structured JSON
-- High-signal human `.report.md` with checklists and "How to Review This Change" guidance
-- Ready-to-apply `.patch`
-- `.run-meta.json` for reproducibility
-- Persistent status files (`.cdh-run-*.status`) with full launch → wait → completion lifecycle, queryable via `--status`
-
-Long-running support is first-class:
-- `--timeout` / `--max-turns`
-- `--wait-for-completion` with automatic background recovery
-- `--status` and smart `--resume` for visibility and control
-- Best-effort summary synthesis from agent `PROGRESS.json` checkpoints when the model omits the required `=== DELEGATION SUMMARY ===` markers (now a supported recovery path with clear signaling in reports)
-
-The project maintains two aligned purposes:
-- A practical, MIT-licensed tool for reliable coding delegation
-- The primary dogfooding platform for designing clean delegation patterns for future sidecar architectures
-
-The code in this repository is the current production version.
-
-## Development & Contributing
-
-Core implementation lives in `src/code_delegation_harness/harness.py` (with shims in `bin/gcdh`; `scripts/grok_delegate.py` is a legacy compatibility shim). You can also run with `python -m code_delegation_harness` after install or with PYTHONPATH=src.
-
-See `CHANGELOG.md` for release history. Full development notes live in the upstream development tree.
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contributor credit.
+153 tests. All modules have dedicated test files.
 
 ## License
 
@@ -233,4 +211,4 @@ MIT
 
 ---
 
-Built as a focused coding harness. The priority is useful, low-friction delegation with excellent output — for the person who still has to read, understand, and take responsibility for the final result.
+Built as a focused coding harness. The priority is reliable delegation with excellent output and full auditability — for the person who still has to read, understand, and take responsibility for the final result.

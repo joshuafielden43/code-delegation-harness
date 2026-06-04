@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-delegation-harness"
-version = "0.3.1"
-description = "A harness for delegating coding work to LLMs while keeping your main agent clean. Structured artifacts, long-running support, and swappable backends."
+version = "0.4.0"
+description = "A model-agnostic harness for delegating coding work to any coding CLI. Intake normalization, manifest extraction, hygiene stanza injection, attack loop, and canonical build attempt traces."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -25,6 +25,14 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.optional-dependencies]
+# Intake gate extras: Anthropic SDK for structured orchestrator calls via native tool_use.
+# Install with: pip install "code-delegation-harness[intake]"
+# Without these, the intake gate falls back to the CLI backend (no extra deps required).
+intake = [
+    "anthropic>=0.40.0",
 ]
 
 [project.scripts]
