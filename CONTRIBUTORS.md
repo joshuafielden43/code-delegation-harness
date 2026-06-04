@@ -4,7 +4,7 @@ This file recognizes people and collaborators who made meaningful implementation
 
 ## Maintainer
 
-- **Joshua Fielden** (Nonesuch Industries) — product owner, architect, and primary author. Designed the delegation model, defined all binding decisions, and drove the project from initial concept through PRD v1.0.
+- **Joshua Fielden** (Nonesuch Applied Infrastructure) — product owner, architect, and primary author. Designed the delegation model, defined all binding decisions, and drove the project from initial concept through PRD v1.0.
 
 ## AI Collaborators
 
