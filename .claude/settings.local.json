@@ -29,7 +29,8 @@
       "Bash(python -m pytest tests/test_intake.py -v)",
       "Bash(python -m pytest tests/test_trace.py -v)",
       "Bash(xargs cat)",
-      "Bash(git -C /Users/jcf/Projects/code-harness-claude commit -m ' *)"
+      "Bash(git -C /Users/jcf/Projects/code-harness-claude commit -m ' *)",
+      "Bash(git -C /Users/jcf/Projects/code-harness-claude push)"
     ]
   }
 }

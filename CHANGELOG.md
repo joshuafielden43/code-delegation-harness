@@ -5,7 +5,103 @@ All notable changes to the Code Delegation Harness (gcdh) will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.4.0] — Unreleased
+
+### Summary
+0.4.0 transforms the harness from a clean CLI wrapper into a closed-loop quality system.
+The core addition is an **intake gate** that runs before every CLI invocation: it detects
+whether a prompt is human or AI-structured, normalises it via an orchestrator model,
+extracts a typed artifact manifest, and pre-generates an adversarial attack frame — all in
+a single call before the execution CLI is touched. A **hygiene stanza** (v1.0, version-pinned,
+portability-linted) is injected into every normalised prompt. A **build attempt trace** (YAML)
+is written for every run. Post-run **manifest diffing** and **smoke testing** (T1/T2/T3)
+provide ground-truth verification. The attack loop now uses real filesystem evidence, not model
+self-reporting.
+
+### New: Intake Gate (Phase 2)
+- `intake.py` — orchestrator gate with four operations per invocation: prompt detection,
+  normalisation, manifest extraction, attack frame pre-generation.
+- `detect_prompt_type()` — schema validator (~5 lines) distinguishing human vs AI-structured
+  prompts. AI-structured prompts pass through unchanged (`was_normalized=false`).
+- `AnthropicOrchestratorBackend` — uses Anthropic SDK with native `tool_use` for structured
+  output. No `instructor` dependency. Install with `pip install "code-delegation-harness[intake]"`.
+- `CLIOrchestratorBackend` — fallback using the execution CLI subprocess; zero extra deps.
+- `get_orchestrator(provider="auto")` — auto-detects `ANTHROPIC_API_KEY`; falls back to CLI.
+- Graceful degradation: any intake failure passes raw prompt through with warning. Never aborts.
+- Intake call wrapped in `RetryPolicy(max=3, base=2s)` — transient network errors do not
+  immediately degrade the run.
+- New flags: `--orchestrator-model`, `--orchestrator-provider`, `--orchestrator-timeout`,
+  `--skip-normalization` (bypasses intake AND stanza injection entirely).
+
+### New: Hygiene Stanza (Phase 3)
+- `stanzas/base_v1.0.txt` — generic, portable, project-agnostic v1.0 stanza covering five
+  universal engineering standards. Appended to every normalised prompt.
+- `assert_stanza_portable()` — portability lint that fails if the stanza contains any
+  project-specific file names, paths, or tool names. Enforced at load time.
+- Stanza module plugin slot (`stanza_modules: [base]`) ready for Phase 6 domain extensions.
+- New flags: `--no-hygiene` (skip injection), `--stanza-modules` (select modules).
+
+### New: Build Attempt Trace (Phase 1 / trace.py)
+- Every run produces a YAML trace at `{research-dir}/build-attempts/{id}.yaml` (0600).
+- Schema covers: intent (raw + normalised) · intake · confirmation · manifest · runs with
+  SHA-256 output digests · attack critique · verdict with smoke tier.
+- `--research-dir` flag (default: `{target-dir}/research/tmp`) for all runtime artifacts.
+- Full stdout/stderr written to `research/tmp` (0600); only SHA-256 digests in trace (D-07).
+- Trace path included in result JSON (`build_attempt_trace`) and in `.report.md`.
+- `--prune-research [N]` — purge traces and stdout/stderr artifacts older than N days
+  (default 7). Mirrors `--prune` for status files.
+
+### New: Confirmation Loop (Phase 4)
+- `--confirm` — opt-in flag (off by default; never interrupts automated pipelines).
+- Shows normalised intent + expected artifact list before CLI runs.
+- Accepts one correction input; re-normalises via orchestrator; re-shows updated manifest.
+- Hard cap: 2 rounds, proceeds regardless. Corrections captured in trace for tuning data.
+
+### New: Manifest Diffing + Smoke Testing (Phase 5 / smoke.py)
+- `diff_manifest()` — post-run filesystem scan vs `manifest.expected`. Produces `found` and
+  `missing` lists from ground truth, not model self-reporting.
+- Missing artifacts injected into the attack prompt as explicit `spec_coverage` weakness items.
+  The attack loop now targets what is actually absent on disk.
+- `run_smoke_tests()` — T1 (artifact exists), T2 (Python import exits 0), T3 (AST public-name
+  conformance). Result in `verdict.smoke_tier` and `smoke` dict in result JSON.
+- `manifest_found` / `manifest_missing` in result JSON.
+
+### New: Normalization Prompt Versioning (OQ-02)
+- `prompts/normalization_v1.0.txt` — the intake system prompt is now a versioned file.
+  Edit it to improve normalisation quality without touching Python source.
+- `NORMALIZATION_PROMPT_VERSION = "normalization-v1.0"` constant.
+- `normalized_via.prompt_version` in trace reflects which version ran.
+
+### New: `--iterations` Flag (Phase 1 / D-06)
+- `--iterations N` — total pass cap including original run. Aliases/replaces
+  `--remediation-max-passes`. Default: 2 (1 original + 1 attack pass). `--iterations 1`
+  means no attack passes. Warning emitted if both flags are supplied.
+
+### Model-Agnostic Rename
+- `build_grok_prompt` → `build_execution_prompt` (old name kept as backward-compat alias).
+- Internal "Grok"-specific strings neutralised in reports and dry-run output.
+- Dry-run preview now shows full Phase 2-4 configuration (orchestrator, stanzas, confirmation,
+  iterations).
+
+### Security / Operational
+- `research/`, `.cdh-prompts/`, `.cdh-locks/` added to `.gitignore` (prevents accidental
+  commit of traces with full task text and API responses).
+- `ensure_research_dir()` calls `chmod(0o700)` on every invocation, fixing pre-existing
+  loose-permission directories.
+- `intake_status` field in result JSON: `success | degraded | error | skipped | unavailable`.
+  `ImportError` caught separately with install hint.
+- Research write failures logged to stderr (no longer silently dropped).
+- `--confirm` + unavailable intake: explicit warning rather than silent skip.
+
+### Dependency Change
+- `[intake]` extra simplified: `anthropic>=0.40.0` only. `instructor` and `pydantic` removed
+  (native `tool_use` replaces instructor-based structured output).
+
+### Tests
+- 61 → 153 tests (all passing). New test files: `test_trace.py`, `test_stanzas.py`,
+  `test_intake.py`, `test_confirmation.py`, `test_research_prune.py`, `test_smoke.py`.
+
+## Unreleased (pre-0.4.0)
 
 ### Long-Running Visibility & Launcher Escape
 - Added support and strong recommendations for `--long-running` (and `--keep-driving` alias) as the primary mode for serious, ambitious dogfood and implementation work. This mode:
