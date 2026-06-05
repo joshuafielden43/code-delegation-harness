@@ -2267,7 +2267,7 @@ def main():
     parser.add_argument("--target-dir", help="Working directory for the task")
     parser.add_argument("--context", help="Additional context for the task")
     parser.add_argument("--constraints", help="Hard constraints or requirements")
-    parser.add_argument("--model", default="grok-build", help="Execution CLI model to use (default: grok-build)")
+    parser.add_argument("--model", default="grok-composer-2.5-fast", help="Execution CLI model to use (default: grok-composer-2.5-fast)")
     parser.add_argument("--output-file", help="Optional path to write structured results")
     parser.add_argument("--timeout", type=int, default=1800, help="Timeout in seconds for the inner model run (default: 1800 = 30 minutes)")
     parser.add_argument("--max-turns", type=int, default=60, help="Maximum turns for the inner model run (default: 60)")
