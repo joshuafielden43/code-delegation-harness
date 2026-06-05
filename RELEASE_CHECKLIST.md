@@ -2,6 +2,15 @@
 
 Use this checklist before cutting any release (patch or minor). It is meant to be used in conjunction with `docs/development/release-process.md`.
 
+## Release Gate (mandatory — do not skip)
+
+This project has a standing multi-model review gate before any promotion to the production Hermes skill. See CONTRIBUTING.md for the full rationale.
+
+- [ ] **MoM review complete** — Honey Nous has conducted a Meeting of Models review (QA · DevOps · InfoSec) against the release candidate branch
+- [ ] **All critical/high findings addressed** — remediation committed and CI passing
+- [ ] **Medium findings resolved or explicitly deferred** — deferred items noted in CHANGELOG or commit message with rationale
+- [ ] **Joshua has approved promotion** — the step from `main` to `~/.hermes/skills/software-development/code-delegation-harness` is a manual, deliberate act
+
 ## Pre-Release Preparation
 
 - [ ] Working tree is clean (`git status --porcelain` is empty)

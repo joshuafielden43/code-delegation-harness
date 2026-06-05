@@ -4,6 +4,40 @@ Thank you for your interest in contributing. This project aims to be a reliable,
 
 We use the harness itself for development work where practical.
 
+## How This Project Actually Works
+
+This project is built and reviewed by a team of human and AI collaborators. Understanding the division of labour prevents confusion and wasted effort.
+
+**Joshua Fielden (Nonesuch Applied Infrastructure)** — product owner and architect. Defines requirements, makes binding decisions, owns the Hermes production environment.
+
+**Claude (Anthropic)** — implementation. Writes code, tests, and documentation. Works in `~/Projects/code-delegation-harness`. Commits to GitHub. Does not touch the production Hermes skill install.
+
+**Honey Nous** — review and hardening. Conducts multi-perspective MoM reviews (QA · DevOps · InfoSec) against each release candidate. Does not have access to `~/Projects/` or any `~/.[harness]` paths — reviews from GitHub only.
+
+**Grok Code / Codex** — prior implementation contributions; see CONTRIBUTORS.md.
+
+### The Release Gate
+
+No code is promoted to the production Hermes skill (`~/.hermes/skills/software-development/code-delegation-harness`) without passing through this gate:
+
+1. **Build** — Claude implements on the feature branch, all tests pass, CI is green.
+2. **MoM review** — Honey conducts a Meeting of Models review: QA, DevOps, and InfoSec perspectives independently, then synthesised. Findings are raised as issues with severity ratings.
+3. **Remediation** — All critical and high findings are addressed before merge. Medium findings are addressed or explicitly deferred with rationale.
+4. **Merge to main** — Squash merge via PR after CI passes.
+5. **Promote to production** — Joshua manually promotes `main` to the Hermes skill when satisfied. This step is never automated.
+
+This pattern has caught 4-5 real bugs per release cycle. The value is the cold read — Honey reviews without implementation context, which surfaces assumptions the implementer doesn't see.
+
+### Access boundaries
+
+| Collaborator | `~/Projects/` | `~/.[harness]` | GitHub |
+|---|---|---|---|
+| Claude | ✅ read/write | ✅ read/write | ✅ push |
+| Honey | ❌ | ❌ | ✅ read only |
+| Grok | varies | varies | ✅ |
+
+These boundaries are intentional and must not be bypassed.
+
 ## Development Setup
 
 ```bash
