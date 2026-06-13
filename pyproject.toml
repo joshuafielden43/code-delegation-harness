@@ -32,7 +32,7 @@ classifiers = [
 # Install with: pip install "code-delegation-harness[intake]"
 # Without these, the intake gate falls back to the CLI backend (no extra deps required).
 intake = [
-    "anthropic>=0.40.0",
+    "anthropic>=0.109.1",
 ]
 
 [project.scripts]
